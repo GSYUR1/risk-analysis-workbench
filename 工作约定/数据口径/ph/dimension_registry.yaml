@@ -1,0 +1,380 @@
+registry_type: dimension_registry
+version: 1
+updated_at: 2026-08-28
+
+profiles:
+  ph_newcust_cre_pivot_v1:
+    name: 菲律宾新客常用指标维度字典
+    description: 对应 菲律宾新客常用指标.xlsx pivot参考（维度：注册系统*授信月，筛选器：授信评级）。维度全部取自 ph_risk.cx_ph_newcust_cre_order_trace（指标表 ph_risk.cx_ph_newcust_cre_indicator 同字段透传），upstream 标注字段在宽表中的来源逻辑。
+    base_tables:
+      order_trace: ph_risk.cx_ph_newcust_cre_order_trace
+      indicator: ph_risk.cx_ph_newcust_cre_indicator
+    dimensions:
+      trace_date:
+        name: 授信日期
+        category: time
+        source_fields:
+          order_trace: trace_date
+          indicator: trace_date
+        upstream: ph_dwd.dwd_preloan_credit_apply_df.created_time (to_date)
+        description: 授信申请日期，指标表取数范围 trace_date>='2025-05-01'。
+      trace_mth:
+        name: 授信月份
+        category: time
+        source_fields:
+          order_trace: trace_mth
+          indicator: trace_mth
+        upstream: substr(to_date(created_time),1,7)
+        description: 授信申请月份。pivot参考的行维度“授信月”即按该字段以yyyymm展示(202604-202608)。
+      trace_week1:
+        name: 授信周（周一起）
+        category: time
+        source_fields:
+          order_trace: trace_week
+          indicator: trace_week
+        upstream: DATE_ADD(NEXT_DAY(credit_created_time,'Monday'),-7)
+        description: 按周一起算的授信周；另有 trace_week2..trace_week7 分别对应周二..周日起算。
+      account_date:
+        name: 首期出账日
+        category: time
+        source_fields:
+          order_trace: account_date
+          indicator: account_date
+        upstream: ph_dws.dws_risk_dpd_vintage_df.account_date
+        description: 订单首期出账/放款日期，风险表现按出账口径观察。
+      register_device_type:
+        name: 注册系统
+        category: device
+        source_fields:
+          order_trace: register_device_type
+          indicator: register_device_type
+        upstream: ph_risk.risk_common_user.register_device_type
+        description: 注册平台（Android/ios）。pivot参考的列维度“注册系统”。
+      channel:
+        name: 渠道
+        category: channel
+        source_fields:
+          order_trace: channel
+          indicator: channel
+        upstream: ph_ods.ods_mysql_prod_user_user_ext_df.channel：Organic或无记录=自然量，否则=投放-{channel}
+        description: 投放渠道分层，自然量 vs 投放-媒体。
+      media_source:
+        name: 媒体来源
+        category: channel
+        source_fields:
+          order_trace: media_source
+          indicator: media_source
+        upstream: ph_ods.ods_mysql_prod_user_user_ext_df.channel
+        description: Google/Facebook/Tiktok/Organic 等原始媒体标识。
+      campaign_name:
+        name: campaign名称
+        category: channel
+        source_fields:
+          order_trace: campaign_name
+          indicator: campaign_name
+        upstream: ph_ods.ods_mysql_prod_user_user_df.campaign_name
+        description: 注册时携带的投放campaign。
+      callback_strategy:
+        name: 回调策略
+        category: channel
+        source_fields:
+          order_trace: f_utm_source / callback_strategy
+          indicator: f_utm_source / callback_strategy
+        upstream: ph_ads.bi_camp_strategy_name.callback_strategy
+        description: campaign对应的转化回调策略。
+      campaign_group:
+        name: campaign分组
+        category: channel
+        source_fields:
+          order_trace: campaign_group
+          indicator: campaign_group
+        upstream: media_source + callback_strategy 组合 case when 映射
+        description: Google/Facebook/Tiktok 重点回调策略分组，其余归 other。
+      carrier:
+        name: 运营商
+        category: device
+        source_fields:
+          order_trace: carrier
+          indicator: carrier
+        upstream: ph_ods.ods_mysql_prod_user_user_df.login_name 手机号前缀映射
+        description: DITO/GLOBE/SMART/SUN/UNKNOWN。
+      is_first_apply:
+        name: 是否首申
+        category: user
+        source_fields:
+          order_trace: is_first_apply
+          indicator: is_first_apply
+        upstream: dwd_preloan_credit_apply_df rn_credit_asc=1 -> 01.首申，否则 02.非首申
+        description: 首申与非首申人群风险差异大，分析时注意区分（源表备注）。
+      hist_if_loan_suc:
+        name: 历史是否借款成功
+        category: user
+        source_fields:
+          order_trace: hist_if_loan_suc
+          indicator: hist_if_loan_suc
+        upstream: ph_risk.risk_common_loan.loan_freq（授信创建时间前的成功借款）
+        description: 授信前是否已有成功借款，用于剔除/区分老客。
+      cre_creditlevel:
+        name: 授信信用等级（调整后）
+        category: risk_grade
+        source_fields:
+          order_trace: cre_creditlevel
+          indicator: cre_creditlevel
+        upstream: dwd_inloan_t_decision_result_detail_df output.creditLevel + boyu_cre_rating_conversion_newcust.creditlevel_adjust；A->A1
+        description: 授信决策流信用等级，经0918评级转换调整。
+      cre_rating:
+        name: 授信评级（调整后）
+        category: risk_grade
+        source_fields:
+          order_trace: cre_rating
+          indicator: cre_rating
+        upstream: 决策流 output.rating + boyu_cre_rating_conversion_newcust.rating_adjust
+        description: 授信主评级（调整后）。pivot参考筛选器“授信评级”对应 cre_rating/cre_rating_sub 口径。
+      cre_rating_sub:
+        name: 授信子评级（调整后）
+        category: risk_grade
+        source_fields:
+          order_trace: cre_rating_sub
+          indicator: cre_rating_sub
+        upstream: nvl(output.rating_sub, output.rating) + boyu转换 rating_sub_adjust；A->A1
+        description: 授信子评级（调整后），空值回退主评级。
+      cre_creditlevel_org:
+        name: 授信信用等级（原始）
+        category: risk_grade
+        source_fields:
+          order_trace: cre_creditlevel_org
+          indicator: cre_creditlevel_org
+        upstream: 决策流 output.creditLevel 原值
+        description: 未经评级转换的原始信用等级。
+      cre_rating_org:
+        name: 授信评级（原始）
+        category: risk_grade
+        source_fields:
+          order_trace: cre_rating_org
+          indicator: cre_rating_org
+        upstream: 决策流 output.rating 原值
+        description: 未经评级转换的原始主评级。
+      cre_rating_sub_org:
+        name: 授信子评级（原始）
+        category: risk_grade
+        source_fields:
+          order_trace: cre_rating_sub_org
+          indicator: cre_rating_sub_org
+        upstream: nvl(output.rating_sub, output.rating) 原值
+        description: 未经评级转换的原始子评级。
+      cre_rating_version:
+        name: 评级版本
+        category: risk_grade
+        source_fields:
+          order_trace: cre_rating_version
+          indicator: cre_rating_version
+        upstream: 决策流 context.rating_version（engineversion<136 按随机数/版本规则推断），展示时 6.1->V6.0、6.2->V6.1 等映射
+        description: 评级模型版本（V5.1..V8.1）。
+      rating_test_version:
+        name: 评级测试版本
+        category: risk_grade
+        source_fields:
+          order_trace: rating_test_version
+          indicator: rating_test_version
+        upstream: engineversion 分段映射（01:0522_v4v5 .. 15:0618_v101v111）
+        description: 按决策引擎版本划分的评级迭代版本段。
+      credit_test_version:
+        name: 额度测试版本
+        category: strategy
+        source_fields:
+          order_trace: credit_test_version
+          indicator: credit_test_version
+        upstream: engineversion>=166 -> 0808_test；>=136 -> 0704_test
+        description: 额度策略测试版本。
+      credit_test_group:
+        name: 授信AB测试分组
+        category: strategy
+        source_fields:
+          order_trace: credit_test_group
+          indicator: credit_test_group
+        upstream: register_device_type + 授信时间窗 + ph_ods.randomv3('loan_apply',user_id,2) 随机数
+        description: ctrl/test 分组：ios 2026-03-13起、非ios自然量 2026-01-28~2026-05-08 反向、其余非ios 2026-01-28起。
+      ord_creditlevel:
+        name: 用信信用等级（调整后）
+        category: risk_grade
+        source_fields:
+          order_trace: ord_creditlevel
+          indicator: ord_creditlevel
+        upstream: 新客请款子决策 output.creditLevel + boyu_ord_rating_conversion_newcust
+        description: 用信（动支）决策流信用等级，调整后。
+      ord_rating:
+        name: 用信评级（调整后）
+        category: risk_grade
+        source_fields:
+          order_trace: ord_rating
+          indicator: ord_rating
+        upstream: 用信决策流 output.rating + boyu_ord转换
+        description: 用信主评级（调整后）。
+      ord_rating_sub:
+        name: 用信子评级（调整后）
+        category: risk_grade
+        source_fields:
+          order_trace: ord_rating_sub
+          indicator: ord_rating_sub
+        upstream: nvl(output.rating_sub, output.rating) + boyu_ord转换
+        description: 用信子评级（调整后）。
+      product_term_code:
+        name: 产品期限代码
+        category: product
+        source_fields:
+          order_trace: product_term_code
+          indicator: product_term_code
+        upstream: 订单表 product_term_code（用信决策流输出匹配）
+        description: 产品期限包代码。
+      productTermPackage:
+        name: 产品包
+        category: product
+        source_fields:
+          order_trace: productTermPackage
+          indicator: productTermPackage
+        upstream: 授信决策流 GET_JSON_OBJECT(output,'$.productTermPackage')
+        description: 授信决策输出的产品包编码。
+      productTermPackage_name:
+        name: 产品包（名称）
+        category: product
+        source_fields:
+          order_trace: productTermPackage_name
+          indicator: productTermPackage_name
+        upstream: productTermPackage case when 映射（7d*1、15d*1/2/4、30d*1/2/3 等）
+        description: 产品包人类可读名称（期数*每期天数）。
+      price_group:
+        name: 定价分组
+        category: product
+        source_fields:
+          order_trace: price_group
+          indicator: price_group
+        upstream: productTermPackage case when 映射
+        description: 按产品包归类的IRR定价档位（0.4%/0.5%/1.0%/1.5%/2.0%）。
+      price_code:
+        name: 价格代码
+        category: product
+        source_fields:
+          order_trace: price_code
+          indicator: price_code
+        upstream: 订单表 price_code
+        description: 订单价格代码。
+      price:
+        name: IRR定价
+        category: product
+        source_fields:
+          order_trace: price
+          indicator: price
+        upstream: ph_risk.ph_product_term_price_duration_mapping.price
+        description: 单期IRR价格。
+      period:
+        name: 期数
+        category: product
+        source_fields:
+          order_trace: period
+          indicator: period
+        upstream: ph_product_term_price_duration_mapping.period
+        description: 订单分期期数。
+      days_per_period:
+        name: 每期天数
+        category: product
+        source_fields:
+          order_trace: days_per_period
+          indicator: days_per_period
+        upstream: ph_product_term_price_duration_mapping.days_per_period
+        description: 每期天数。
+      vip_group:
+        name: 会员可见性分组
+        category: strategy
+        source_fields:
+          order_trace: vip_group
+          indicator: vip_group
+        upstream: trace_date 分段 + ph_ods.RANDOMV3('vip',user_id,2)
+        description: p1/p2/p3 阶段可见会员/不可见会员随机分组。
+      vip_default_select:
+        name: 会员默认勾选分组
+        category: strategy
+        source_fields:
+          order_trace: vip_default_select
+          indicator: vip_default_select
+        upstream: trace_date>2026-03-18 时 RANDOMV3('vip_select_new') 0-49 默认勾选 / 50-99 默认不勾选
+        description: 会员默认勾选AB分组。
+      vip_order:
+        name: 权益使用标识
+        category: strategy
+        source_fields:
+          order_trace: vip_order
+          indicator: vip_order
+        upstream: ph_dwd.dwd_vipcore_vip_order_df 是否匹配到权益订单
+        description: 权益使用用户 / 非权益使用用户。
+      vip_order_success:
+        name: 权益购买结果
+        category: strategy
+        source_fields:
+          order_trace: vip_order_success
+          indicator: vip_order_success
+        upstream: vip订单 order_status='PAY_SUCCESS'
+        description: 购买 / 未购买。
+      age:
+        name: 年龄分箱
+        category: profile
+        source_fields:
+          order_trace: age
+          indicator: age
+        upstream: ph_risk.cx_ph_credit_new_cust_feature（age_raw 分箱）
+        description: 授信阶段年龄分箱；成交均值见指标 deal_age。
+      f_education:
+        name: 学历分箱
+        category: profile
+        source_fields:
+          order_trace: f_education
+          indicator: f_education
+        upstream: cx_ph_credit_new_cust_feature（f_education_raw 分箱）
+        description: 学历分箱；成交均值见指标 deal_education。
+      monthly_income_bin:
+        name: 月收入分箱
+        category: profile
+        source_fields:
+          order_trace: monthly_income_bin
+          indicator: monthly_income_bin
+        upstream: cx_ph_credit_new_cust_feature（monthly_income_raw 分箱）
+        description: 月收入分箱；成交均值见指标 deal_monthly_income。
+      advance_multib_bin:
+        name: adv黑盘多头分箱
+        category: profile
+        source_fields:
+          order_trace: advance_multib_bin
+          indicator: advance_multib_bin
+        upstream: cx_ph_credit_new_cust_feature（advance_multib_raw 分箱）
+        description: Advance黑盘多头分箱；成交均值见指标 deal_advance_multib。
+      advance_multia_bin:
+        name: adv白盘多头分箱
+        category: profile
+        source_fields:
+          order_trace: advance_multia_bin
+          indicator: advance_multia_bin
+        upstream: cx_ph_credit_new_cust_feature（advance_multia_raw 分箱）
+        description: Advance白盘多头分箱；成交均值见指标 deal_advance_multia。
+      mobilewalla_multi_bin:
+        name: mw多头分箱
+        category: profile
+        source_fields:
+          order_trace: mobilewalla_multi_bin
+          indicator: mobilewalla_multi_bin
+        upstream: cx_ph_credit_new_cust_feature（mobilewalla_multi_raw 分箱）
+        description: MobileWalla多头分箱；成交均值见指标 deal_mobilewalla_multi。
+      app_lending_install_bin:
+        name: 借贷app安装分箱
+        category: profile
+        source_fields:
+          order_trace: app_lending_install_bin
+          indicator: app_lending_install_bin
+        upstream: cx_ph_credit_new_cust_feature（app_all_lending_install_raw 分箱）
+        description: 借贷类app安装个数分箱；成交均值见指标 deal_lending_app。
+      cibi_total_balance_bin:
+        name: cibi总余额分箱
+        category: profile
+        source_fields:
+          order_trace: cibi_total_balance_bin
+          indicator: cibi_total_balance_bin
+        upstream: cx_ph_credit_new_cust_feature（cibi报文特征分箱）
+        description: CIBI征信总余额分箱；成交均值见指标 deal_cibi_total_balance。

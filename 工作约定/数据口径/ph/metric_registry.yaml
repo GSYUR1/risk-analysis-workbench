@@ -1,0 +1,3127 @@
+registry_type: metric_registry
+version: 1
+updated_at: '2026-08-28'
+
+notes:
+  base_tables:
+    - table: ph_risk.cx_ph_newcust_cre_indicator
+      role: pivot底表（指标聚合，粒度 user_id*credit_apply_no*loan_apply_no，trace_date>='2025-05-01'）
+    - table: ph_risk.cx_ph_newcust_cre_order_trace
+      role: 用户实际取数明细表（同粒度，含全部维度与明细字段）
+  currency: 底表金额单位为PHP；pivot中($)列按 FX=61 PHP/USD 换算（已用rawdata数值反推验证）。菲律宾_常用数仓表.xlsx 中旧口径SQL使用/56。
+  risk_semantics: |
+    风险表现点记作 {期数}_{观察天数}，源自 ph_dws.dws_risk_dpd_vintage_df（tag='new'）。
+    overdue_amt_{p}_{d}: 第p期在观察点d天的逾期金额（源表字段）。
+    观察点已出数(overdue_amt非null)即视为到期: expire_amt_{p}_{d}=该单repay_principal, expire_cnt_{p}_{d}=1。
+    overdue_cnt_{p}_{d}=1 当 overdue_amt_{p}_{d}>0。
+    金额逾期率 dpd{p}_{d}=overdue_amt/expire_amt；人头(订单)逾期率 dpd{p}_{d}cnt=overdue_cnt/expire_cnt。
+  risk_points: 期数1观察点[1,2,3,4,5,7,10,15]；期数2观察点[1,2,3,4,5,7,10,15]；期数3-6观察点[1,3,7,15]，共32个表现点。
+
+profiles:
+  ph_newcust_cre_pivot_v1:
+    name: 菲律宾新客常用指标口径
+    description: 基于 菲律宾新客常用指标.xlsx pivot参考 逐列数值反推验证后的指标注册表，并扩展全部32个风险表现点与衍生指标（人头逾期率、授信效率）。
+    metrics:
+      cre_cnt:
+        name: 授信件数
+        category: credit
+        format: integer
+        aggregation: sum
+        numerator_field: cre_cnt
+        denominator_field: null
+        definition: 授信申请件数 = count(distinct credit_apply_no)。pivot列：授信件数。
+        source: excel_pivot_formula_confirmed
+        sql_expression: count(distinct credit_apply_no)
+      apprv_cnt:
+        name: 授信通过件数
+        category: credit
+        format: integer
+        aggregation: sum
+        numerator_field: apprv_cnt
+        denominator_field: null
+        definition: 授信通过件数 = count(distinct case when is_approve=1 then credit_apply_no end)，is_approve=1 即 status=20。
+        source: sql_metric_source
+        sql_expression: count(distinct case when is_approve=1 then credit_apply_no end)
+      credit_pass_rate:
+        name: 授信通过率
+        category: credit
+        format: percent
+        aggregation: ratio
+        numerator_field: apprv_cnt
+        denominator_field: cre_cnt
+        formula: apprv_cnt/cre_cnt
+        definition: '授信通过率 = 授信通过件数/授信件数。pivot列：求和项:授信通过率。'
+        source: excel_pivot_formula_confirmed
+      total_credits:
+        name: 授信通过总额度(PHP)
+        category: credit
+        format: amount
+        aggregation: sum
+        numerator_field: total_credits
+        denominator_field: null
+        definition: 授信通过总额度 = sum(case when is_approve=1 and is_credit=1 then credit_amount_after end)，单位PHP。
+        source: sql_metric_source
+        sql_expression: sum(case when is_approve=1 and is_credit=1 then credit_amount_after end)
+      credit_amount_avg_php:
+        name: 授信件均(PHP)
+        category: credit
+        format: integer
+        aggregation: ratio
+        numerator_field: total_credits
+        denominator_field: apprv_cnt
+        formula: total_credits/apprv_cnt
+        definition: 授信件均（PHP）= 授信通过总额度/授信通过件数。
+        source: sql_metric_source
+      credit_amount_usd:
+        name: 授信额度($)
+        category: credit
+        format: decimal
+        aggregation: ratio
+        numerator_field: total_credits
+        denominator_field: apprv_cnt
+        formula: total_credits/apprv_cnt/61
+        definition: '人均授信额度（USD）= 授信通过总额度/授信通过件数/61。pivot列：求和项:授信额度($)。'
+        source: excel_pivot_formula_confirmed
+        sql_expression: sum(total_credits)/sum(apprv_cnt)/61
+      credit_efficiency:
+        name: 授信效率
+        category: credit
+        format: decimal
+        aggregation: ratio
+        numerator_field: total_credits
+        denominator_field: cre_cnt
+        formula: total_credits/cre_cnt
+        definition: '授信效率 = 总授信额度/授信件数（用户指定口径，PHP）。参考：菲律宾_常用数仓表.xlsx 中定义 授信效率=人均授信USD*授信通过率。'
+        source: user_specified_derived
+      t0_order_fz:
+        name: 动支T0(当天)人数(分子)
+        category: credit_to_withdraw
+        format: integer
+        aggregation: sum
+        numerator_field: t0_order_fz
+        denominator_field: null
+        definition: 授信通过后T0(当天)内发起动支的人数分子 = sum(case when is_approve=1 then t0_order end)；t0_order=订单创建时间距授信创建时间<=阈值。
+        source: excel_pivot_formula_confirmed
+        sql_expression: sum(case when is_approve=1 then t0_order end)
+      withdraw_rate_t0:
+        name: 动支率T0(当天)
+        category: credit_to_withdraw
+        format: percent
+        aggregation: ratio
+        numerator_field: t0_order_fz
+        denominator_field: apprv_cnt
+        formula: t0_order_fz/apprv_cnt
+        definition: '动支率T0(当天) = T0(当天)内动支人数/授信通过件数。pivot列：求和项:动支率T0(当天)。'
+        source: excel_pivot_formula_confirmed
+      t1_order_fz:
+        name: 动支T1(24h)人数(分子)
+        category: credit_to_withdraw
+        format: integer
+        aggregation: sum
+        numerator_field: t1_order_fz
+        denominator_field: null
+        definition: 授信通过后T1(24h)内发起动支的人数分子 = sum(case when is_approve=1 then t1_order end)；t1_order=订单创建时间距授信创建时间<=阈值。
+        source: sql_metric_source
+        sql_expression: sum(case when is_approve=1 then t1_order end)
+      withdraw_rate_t1:
+        name: 动支率T1(24h)
+        category: credit_to_withdraw
+        format: percent
+        aggregation: ratio
+        numerator_field: t1_order_fz
+        denominator_field: apprv_cnt
+        formula: t1_order_fz/apprv_cnt
+        definition: 动支率T1(24h) = T1(24h)内动支人数/授信通过件数。pivot未展示，按同口径衍生。
+        source: sql_metric_source
+      t3_order_fz:
+        name: 动支T3(72h)人数(分子)
+        category: credit_to_withdraw
+        format: integer
+        aggregation: sum
+        numerator_field: t3_order_fz
+        denominator_field: null
+        definition: 授信通过后T3(72h)内发起动支的人数分子 = sum(case when is_approve=1 then t3_order end)；t3_order=订单创建时间距授信创建时间<=阈值。
+        source: excel_pivot_formula_confirmed
+        sql_expression: sum(case when is_approve=1 then t3_order end)
+      withdraw_rate_t3:
+        name: 动支率T3(72h)
+        category: credit_to_withdraw
+        format: percent
+        aggregation: ratio
+        numerator_field: t3_order_fz
+        denominator_field: apprv_cnt
+        formula: t3_order_fz/apprv_cnt
+        definition: '动支率T3(72h) = T3(72h)内动支人数/授信通过件数。pivot列：求和项:动支率T3(72h)。'
+        source: excel_pivot_formula_confirmed
+      t7_order_fz:
+        name: 动支T7(168h)人数(分子)
+        category: credit_to_withdraw
+        format: integer
+        aggregation: sum
+        numerator_field: t7_order_fz
+        denominator_field: null
+        definition: 授信通过后T7(168h)内发起动支的人数分子 = sum(case when is_approve=1 then t7_order end)；t7_order=订单创建时间距授信创建时间<=阈值。
+        source: sql_metric_source
+        sql_expression: sum(case when is_approve=1 then t7_order end)
+      withdraw_rate_t7:
+        name: 动支率T7(168h)
+        category: credit_to_withdraw
+        format: percent
+        aggregation: ratio
+        numerator_field: t7_order_fz
+        denominator_field: apprv_cnt
+        formula: t7_order_fz/apprv_cnt
+        definition: 动支率T7(168h) = T7(168h)内动支人数/授信通过件数。pivot未展示，按同口径衍生。
+        source: sql_metric_source
+      is_order_fz:
+        name: 动支件数
+        category: credit_to_withdraw
+        format: integer
+        aggregation: sum
+        numerator_field: is_order_fz
+        denominator_field: null
+        definition: 动支件数 = sum(case when is_approve=1 then is_order end)，授信通过后发起过动支订单。pivot列：动支件数。
+        source: excel_pivot_formula_confirmed
+        sql_expression: sum(case when is_approve=1 then is_order end)
+      withdraw_rate:
+        name: 动支率
+        category: credit_to_withdraw
+        format: percent
+        aggregation: ratio
+        numerator_field: is_order_fz
+        denominator_field: apprv_cnt
+        formula: is_order_fz/apprv_cnt
+        definition: '总动支率 = 动支件数/授信通过件数。pivot列：求和项:动支率。'
+        source: excel_pivot_formula_confirmed
+      order_approve_cnt:
+        name: 动支通过件数
+        category: withdraw
+        format: integer
+        aggregation: sum
+        numerator_field: order_approve_cnt
+        denominator_field: null
+        definition: '动支审核通过件数 = sum(case when is_approve=1 then is_order_approve end)，订单status>=30。'
+        source: sql_metric_source
+        sql_expression: sum(case when is_approve=1 then is_order_approve end)
+      order_pending_cnt:
+        name: 动支审核中件数
+        category: withdraw
+        format: integer
+        aggregation: sum
+        numerator_field: order_pending_cnt
+        denominator_field: null
+        definition: 动支pending件数 = sum(case when is_approve=1 then is_order_pending end)，订单status=10。
+        source: sql_metric_source
+        sql_expression: sum(case when is_approve=1 then is_order_pending end)
+      withdraw_pass_rate:
+        name: 动支通过率
+        category: withdraw
+        format: percent
+        aggregation: ratio
+        numerator_field: order_approve_cnt
+        denominator_field: is_order_fz
+        formula: order_approve_cnt/is_order_fz
+        definition: '动支通过率 = 动支通过件数/动支件数。pivot列：求和项:动支通过率。'
+        source: excel_pivot_formula_confirmed
+      withdraw_pending_rate:
+        name: 动支pending率
+        category: withdraw
+        format: percent
+        aggregation: ratio
+        numerator_field: order_pending_cnt
+        denominator_field: is_order_fz
+        formula: order_pending_cnt/is_order_fz
+        definition: 动支审核中占比 = 动支审核中件数/动支件数。
+        source: sql_metric_source
+      order_apprv_credits:
+        name: 动支通过授信额度(PHP)
+        category: withdraw
+        format: amount
+        aggregation: sum
+        numerator_field: order_apprv_credits
+        denominator_field: null
+        definition: 动支通过人的授信额度合计 = sum(case when is_approve=1 then order_apprv_credits end)。
+        source: sql_metric_source
+        sql_expression: sum(case when is_approve=1 then order_apprv_credits end)
+      order_apprv_principal:
+        name: 动支通过金额(PHP)
+        category: withdraw
+        format: amount
+        aggregation: sum
+        numerator_field: order_apprv_principal
+        denominator_field: null
+        definition: '动支通过金额合计 = sum(case when is_approve=1 then order_apprv_principal end)，订单status>=30的loan_principal。'
+        source: sql_metric_source
+        sql_expression: sum(case when is_approve=1 then order_apprv_principal end)
+      payout_cnt:
+        name: 成交件数
+        category: withdraw
+        format: integer
+        aggregation: sum
+        numerator_field: payout_cnt
+        denominator_field: null
+        definition: 成交（放款成功）件数 = sum(case when is_approve=1 then is_payout end)，订单status=50。pivot列：成交件数。
+        source: excel_pivot_formula_confirmed
+        sql_expression: sum(case when is_approve=1 then is_payout end)
+      payout_credits:
+        name: 成交授信额度合计(PHP)
+        category: withdraw
+        format: amount
+        aggregation: sum
+        numerator_field: payout_credits
+        denominator_field: null
+        definition: 成交人的授信额度合计 = sum(case when is_approve=1 then payout_credits end)。
+        source: sql_metric_source
+        sql_expression: sum(case when is_approve=1 then payout_credits end)
+      payout_principal:
+        name: 成交金额(PHP)
+        category: withdraw
+        format: amount
+        aggregation: sum
+        numerator_field: payout_principal
+        denominator_field: null
+        definition: 成交（放款成功）金额合计 = sum(case when is_approve=1 then payout_principal end)，单位PHP。pivot列：成交金额。
+        source: excel_pivot_formula_confirmed
+        sql_expression: sum(case when is_approve=1 then payout_principal end)
+      payout_prin_t0:
+        name: 成交金额T0(PHP)
+        category: withdraw
+        format: amount
+        aggregation: sum
+        numerator_field: payout_prin_t0
+        denominator_field: null
+        definition: 授信后t0窗口内成交的放款金额 = sum(case when is_approve=1 then payout_prin_t0 end)。
+        source: sql_metric_source
+        sql_expression: sum(case when is_approve=1 then payout_prin_t0 end)
+      payout_prin_t1:
+        name: 成交金额T1(PHP)
+        category: withdraw
+        format: amount
+        aggregation: sum
+        numerator_field: payout_prin_t1
+        denominator_field: null
+        definition: 授信后t1窗口内成交的放款金额 = sum(case when is_approve=1 then payout_prin_t1 end)。
+        source: sql_metric_source
+        sql_expression: sum(case when is_approve=1 then payout_prin_t1 end)
+      payout_prin_t3:
+        name: 成交金额T3(PHP)
+        category: withdraw
+        format: amount
+        aggregation: sum
+        numerator_field: payout_prin_t3
+        denominator_field: null
+        definition: 授信后t3窗口内成交的放款金额 = sum(case when is_approve=1 then payout_prin_t3 end)。
+        source: sql_metric_source
+        sql_expression: sum(case when is_approve=1 then payout_prin_t3 end)
+      deal_credit_per_case_usd:
+        name: 成交-授信件均($)
+        category: withdraw
+        format: decimal
+        aggregation: ratio
+        numerator_field: payout_credits
+        denominator_field: payout_cnt
+        formula: payout_credits/payout_cnt/61
+        definition: '成交-授信件均（USD）= 成交授信额度合计/成交件数/61。pivot列：求和项:成交-授信件均($)。'
+        source: excel_pivot_formula_confirmed
+        sql_expression: sum(payout_credits)/sum(payout_cnt)/61
+      loan_principal_per_case_usd:
+        name: 放款件均($)
+        category: withdraw
+        format: decimal
+        aggregation: ratio
+        numerator_field: payout_principal
+        denominator_field: payout_cnt
+        formula: payout_principal/payout_cnt/61
+        definition: '放款件均（USD）= 成交金额/成交件数/61。pivot列：求和项:放款件均($)。'
+        source: excel_pivot_formula_confirmed
+        sql_expression: sum(payout_principal)/sum(payout_cnt)/61
+      deal_amt_dt:
+        name: '放款本金*实际天数合计'
+        category: pricing
+        format: amount
+        aggregation: sum
+        numerator_field: deal_amt_dt
+        denominator_field: null
+        definition: 'deal_amt_dt = Σ(DATEDIFF(due_date,account_date)*repay_principal)，原版口径中作为IRR分母/久期分子（按还款计划）。'
+        source: sql_metric_source
+        sql_expression: sum(deal_amt_dt)
+      sum_real_duration_principal:
+        name: 久期分子(实际)
+        category: pricing
+        format: amount
+        aggregation: sum
+        numerator_field: sum_real_duration_principal
+        denominator_field: null
+        definition: 'sum(repay_principal*real_duration)，real_duration来自产品映射表a_duration。'
+        source: sql_metric_source
+        sql_expression: 'sum(repay_principal*real_duration)'
+      dt_amt_sum_apr:
+        name: APR分母(名义)
+        category: pricing
+        format: amount
+        aggregation: sum
+        numerator_field: dt_amt_sum_apr
+        denominator_field: null
+        definition: 'sum(repay_principal*apr_duration)，apr_duration来自产品映射表n_duration。'
+        source: sql_metric_source
+        sql_expression: 'sum(repay_principal*apr_duration)'
+      sum_irr_principal:
+        name: IRR分子
+        category: pricing
+        format: amount
+        aggregation: sum
+        numerator_field: sum_irr_principal
+        denominator_field: null
+        definition: 'SUM(repay_principal*price*real_duration)。'
+        source: sql_metric_source
+        sql_expression: 'SUM(repay_principal*price*real_duration)'
+      repay_principal:
+        name: 应还本金合计
+        category: pricing
+        format: amount
+        aggregation: sum
+        numerator_field: repay_principal
+        denominator_field: null
+        definition: 还款计划应还本金合计。
+        source: sql_metric_source
+        sql_expression: sum(repay_principal)
+      repay_interest:
+        name: 应还利息合计
+        category: pricing
+        format: amount
+        aggregation: sum
+        numerator_field: repay_interest
+        denominator_field: null
+        definition: 还款计划应还利息合计。
+        source: sql_metric_source
+        sql_expression: sum(repay_interest)
+      repay_principal_add_interest:
+        name: 应还本息合计
+        category: pricing
+        format: amount
+        aggregation: sum
+        numerator_field: repay_principal_add_interest
+        denominator_field: null
+        definition: 还款计划应还本金+利息合计。
+        source: sql_metric_source
+        sql_expression: sum(repay_principal_add_interest)
+      real_duration:
+        name: 久期
+        category: pricing
+        format: decimal
+        aggregation: ratio
+        numerator_field: sum_real_duration_principal
+        denominator_field: repay_principal
+        formula: sum_real_duration_principal/repay_principal
+        definition: '久期（实际）= Σ(repay_principal*实际久期)/Σ(repay_principal)。pivot列：求和项:久期。'
+        source: excel_pivot_formula_confirmed
+      apr_duration:
+        name: 名义期限
+        category: pricing
+        format: decimal
+        aggregation: ratio
+        numerator_field: dt_amt_sum_apr
+        denominator_field: repay_principal
+        formula: dt_amt_sum_apr/repay_principal
+        definition: '名义期限 = Σ(repay_principal*名义久期)/Σ(repay_principal)。pivot列：求和项:名义期限。'
+        source: excel_pivot_formula_confirmed
+      irr:
+        name: IRR
+        category: pricing
+        format: percent
+        aggregation: ratio
+        numerator_field: sum_irr_principal
+        denominator_field: sum_real_duration_principal
+        formula: sum_irr_principal/sum_real_duration_principal
+        definition: 'IRR = Σ(repay_principal*price*实际久期)/Σ(repay_principal*实际久期)（原版口径分母为deal_amt_dt）。pivot列：求和项:IRR。'
+        source: excel_pivot_formula_confirmed
+      apr:
+        name: APR
+        category: pricing
+        format: percent
+        aggregation: ratio
+        numerator_field: repay_interest
+        denominator_field: dt_amt_sum_apr
+        formula: repay_interest/dt_amt_sum_apr
+        definition: 'APR = 应还利息/Σ(repay_principal*名义久期)。pivot列：求和项:APR。'
+        source: excel_pivot_formula_confirmed
+      available_amount_before:
+        name: 动支前可用额度合计
+        category: quota
+        format: amount
+        aggregation: sum
+        numerator_field: available_amount_before
+        denominator_field: null
+        definition: sum(available_amount_before)，额度切片表biz_scene=20。
+        source: sql_metric_source
+        sql_expression: sum(available_amount_before)
+      available_amount_after:
+        name: 动支后可用额度合计
+        category: quota
+        format: amount
+        aggregation: sum
+        numerator_field: available_amount_after
+        denominator_field: null
+        definition: sum(available_amount_after)。
+        source: sql_metric_source
+        sql_expression: sum(available_amount_after)
+      overdue_amt_1_1:
+        name: 逾期金额1_1
+        category: risk_overdue_amt
+        format: amount
+        aggregation: sum
+        numerator_field: overdue_amt_1_1
+        denominator_field: null
+        definition: 第1期观察点1天的逾期金额合计 = SUM(dpd1_1)，源字段 dws_risk_dpd_vintage_df.overdue_amt_1_1。
+        source: sql_metric_source
+        sql_expression: SUM(dpd1_1)
+      expire_amt_1_1:
+        name: 到期金额1_1
+        category: risk_expire_amt
+        format: amount
+        aggregation: sum
+        numerator_field: expire_amt_1_1
+        denominator_field: null
+        definition: 第1期观察点1天的到期本金合计 = SUM(expire_amt_1_1)，到期判定：overdue_amt_1_1非null，值为该单repay_principal。
+        source: sql_metric_source
+        sql_expression: SUM(expire_amt_1_1)
+      overdue_cnt_1_1:
+        name: 逾期件数1_1
+        category: risk_overdue_cnt
+        format: integer
+        aggregation: sum
+        numerator_field: overdue_cnt_1_1
+        denominator_field: null
+        definition: '第1期观察点1天逾期的订单数 = SUM(overdue_cnt_1_1)，overdue_cnt=1当overdue_amt_1_1>0。'
+        source: sql_metric_source
+        sql_expression: SUM(overdue_cnt_1_1)
+      expire_cnt_1_1:
+        name: 到期件数1_1
+        category: risk_expire_cnt
+        format: integer
+        aggregation: sum
+        numerator_field: expire_cnt_1_1
+        denominator_field: null
+        definition: 第1期观察点1天到期的订单数 = SUM(expire_cnt_1_1)，到期判定：overdue_amt_1_1非null。
+        source: sql_metric_source
+        sql_expression: SUM(expire_cnt_1_1)
+      dpd1_1:
+        name: 1_1金额逾期率
+        category: risk_rate_amt
+        format: percent
+        aggregation: ratio
+        numerator_field: overdue_amt_1_1
+        denominator_field: expire_amt_1_1
+        formula: overdue_amt_1_1/expire_amt_1_1
+        definition: 金额逾期率 = 第1期观察点1天逾期金额/到期本金。按pivot中dpd1_7/dpd2_7/dpd3_7同口径扩展。
+        source: sql_metric_source
+      dpd1_1cnt:
+        name: dpd1_1cnt人头逾期率
+        category: risk_rate_cnt
+        format: percent
+        aggregation: ratio
+        numerator_field: overdue_cnt_1_1
+        denominator_field: expire_cnt_1_1
+        formula: overdue_cnt_1_1/expire_cnt_1_1
+        definition: 人头逾期率 = 第1期观察点1天逾期人数/到期人数（底表粒度为订单，实现为逾期件数/到期件数）。用户指定衍生指标，命名同dpd1_7cnt。
+        source: user_specified_derived
+      overdue_amt_1_2:
+        name: 逾期金额1_2
+        category: risk_overdue_amt
+        format: amount
+        aggregation: sum
+        numerator_field: overdue_amt_1_2
+        denominator_field: null
+        definition: 第1期观察点2天的逾期金额合计 = SUM(dpd1_2)，源字段 dws_risk_dpd_vintage_df.overdue_amt_1_2。
+        source: sql_metric_source
+        sql_expression: SUM(dpd1_2)
+      expire_amt_1_2:
+        name: 到期金额1_2
+        category: risk_expire_amt
+        format: amount
+        aggregation: sum
+        numerator_field: expire_amt_1_2
+        denominator_field: null
+        definition: 第1期观察点2天的到期本金合计 = SUM(expire_amt_1_2)，到期判定：overdue_amt_1_2非null，值为该单repay_principal。
+        source: sql_metric_source
+        sql_expression: SUM(expire_amt_1_2)
+      overdue_cnt_1_2:
+        name: 逾期件数1_2
+        category: risk_overdue_cnt
+        format: integer
+        aggregation: sum
+        numerator_field: overdue_cnt_1_2
+        denominator_field: null
+        definition: '第1期观察点2天逾期的订单数 = SUM(overdue_cnt_1_2)，overdue_cnt=1当overdue_amt_1_2>0。'
+        source: sql_metric_source
+        sql_expression: SUM(overdue_cnt_1_2)
+      expire_cnt_1_2:
+        name: 到期件数1_2
+        category: risk_expire_cnt
+        format: integer
+        aggregation: sum
+        numerator_field: expire_cnt_1_2
+        denominator_field: null
+        definition: 第1期观察点2天到期的订单数 = SUM(expire_cnt_1_2)，到期判定：overdue_amt_1_2非null。
+        source: sql_metric_source
+        sql_expression: SUM(expire_cnt_1_2)
+      dpd1_2:
+        name: 1_2金额逾期率
+        category: risk_rate_amt
+        format: percent
+        aggregation: ratio
+        numerator_field: overdue_amt_1_2
+        denominator_field: expire_amt_1_2
+        formula: overdue_amt_1_2/expire_amt_1_2
+        definition: 金额逾期率 = 第1期观察点2天逾期金额/到期本金。按pivot中dpd1_7/dpd2_7/dpd3_7同口径扩展。
+        source: sql_metric_source
+      dpd1_2cnt:
+        name: dpd1_2cnt人头逾期率
+        category: risk_rate_cnt
+        format: percent
+        aggregation: ratio
+        numerator_field: overdue_cnt_1_2
+        denominator_field: expire_cnt_1_2
+        formula: overdue_cnt_1_2/expire_cnt_1_2
+        definition: 人头逾期率 = 第1期观察点2天逾期人数/到期人数（底表粒度为订单，实现为逾期件数/到期件数）。用户指定衍生指标，命名同dpd1_7cnt。
+        source: user_specified_derived
+      overdue_amt_1_3:
+        name: 逾期金额1_3
+        category: risk_overdue_amt
+        format: amount
+        aggregation: sum
+        numerator_field: overdue_amt_1_3
+        denominator_field: null
+        definition: 第1期观察点3天的逾期金额合计 = SUM(dpd1_3)，源字段 dws_risk_dpd_vintage_df.overdue_amt_1_3。
+        source: sql_metric_source
+        sql_expression: SUM(dpd1_3)
+      expire_amt_1_3:
+        name: 到期金额1_3
+        category: risk_expire_amt
+        format: amount
+        aggregation: sum
+        numerator_field: expire_amt_1_3
+        denominator_field: null
+        definition: 第1期观察点3天的到期本金合计 = SUM(expire_amt_1_3)，到期判定：overdue_amt_1_3非null，值为该单repay_principal。
+        source: sql_metric_source
+        sql_expression: SUM(expire_amt_1_3)
+      overdue_cnt_1_3:
+        name: 逾期件数1_3
+        category: risk_overdue_cnt
+        format: integer
+        aggregation: sum
+        numerator_field: overdue_cnt_1_3
+        denominator_field: null
+        definition: '第1期观察点3天逾期的订单数 = SUM(overdue_cnt_1_3)，overdue_cnt=1当overdue_amt_1_3>0。'
+        source: sql_metric_source
+        sql_expression: SUM(overdue_cnt_1_3)
+      expire_cnt_1_3:
+        name: 到期件数1_3
+        category: risk_expire_cnt
+        format: integer
+        aggregation: sum
+        numerator_field: expire_cnt_1_3
+        denominator_field: null
+        definition: 第1期观察点3天到期的订单数 = SUM(expire_cnt_1_3)，到期判定：overdue_amt_1_3非null。
+        source: sql_metric_source
+        sql_expression: SUM(expire_cnt_1_3)
+      dpd1_3:
+        name: 1_3金额逾期率
+        category: risk_rate_amt
+        format: percent
+        aggregation: ratio
+        numerator_field: overdue_amt_1_3
+        denominator_field: expire_amt_1_3
+        formula: overdue_amt_1_3/expire_amt_1_3
+        definition: 金额逾期率 = 第1期观察点3天逾期金额/到期本金。按pivot中dpd1_7/dpd2_7/dpd3_7同口径扩展。
+        source: sql_metric_source
+      dpd1_3cnt:
+        name: dpd1_3cnt人头逾期率
+        category: risk_rate_cnt
+        format: percent
+        aggregation: ratio
+        numerator_field: overdue_cnt_1_3
+        denominator_field: expire_cnt_1_3
+        formula: overdue_cnt_1_3/expire_cnt_1_3
+        definition: 人头逾期率 = 第1期观察点3天逾期人数/到期人数（底表粒度为订单，实现为逾期件数/到期件数）。用户指定衍生指标，命名同dpd1_7cnt。
+        source: user_specified_derived
+      overdue_amt_1_4:
+        name: 逾期金额1_4
+        category: risk_overdue_amt
+        format: amount
+        aggregation: sum
+        numerator_field: overdue_amt_1_4
+        denominator_field: null
+        definition: 第1期观察点4天的逾期金额合计 = SUM(dpd1_4)，源字段 dws_risk_dpd_vintage_df.overdue_amt_1_4。
+        source: sql_metric_source
+        sql_expression: SUM(dpd1_4)
+      expire_amt_1_4:
+        name: 到期金额1_4
+        category: risk_expire_amt
+        format: amount
+        aggregation: sum
+        numerator_field: expire_amt_1_4
+        denominator_field: null
+        definition: 第1期观察点4天的到期本金合计 = SUM(expire_amt_1_4)，到期判定：overdue_amt_1_4非null，值为该单repay_principal。
+        source: sql_metric_source
+        sql_expression: SUM(expire_amt_1_4)
+      overdue_cnt_1_4:
+        name: 逾期件数1_4
+        category: risk_overdue_cnt
+        format: integer
+        aggregation: sum
+        numerator_field: overdue_cnt_1_4
+        denominator_field: null
+        definition: '第1期观察点4天逾期的订单数 = SUM(overdue_cnt_1_4)，overdue_cnt=1当overdue_amt_1_4>0。'
+        source: sql_metric_source
+        sql_expression: SUM(overdue_cnt_1_4)
+      expire_cnt_1_4:
+        name: 到期件数1_4
+        category: risk_expire_cnt
+        format: integer
+        aggregation: sum
+        numerator_field: expire_cnt_1_4
+        denominator_field: null
+        definition: 第1期观察点4天到期的订单数 = SUM(expire_cnt_1_4)，到期判定：overdue_amt_1_4非null。
+        source: sql_metric_source
+        sql_expression: SUM(expire_cnt_1_4)
+      dpd1_4:
+        name: 1_4金额逾期率
+        category: risk_rate_amt
+        format: percent
+        aggregation: ratio
+        numerator_field: overdue_amt_1_4
+        denominator_field: expire_amt_1_4
+        formula: overdue_amt_1_4/expire_amt_1_4
+        definition: 金额逾期率 = 第1期观察点4天逾期金额/到期本金。按pivot中dpd1_7/dpd2_7/dpd3_7同口径扩展。
+        source: sql_metric_source
+      dpd1_4cnt:
+        name: dpd1_4cnt人头逾期率
+        category: risk_rate_cnt
+        format: percent
+        aggregation: ratio
+        numerator_field: overdue_cnt_1_4
+        denominator_field: expire_cnt_1_4
+        formula: overdue_cnt_1_4/expire_cnt_1_4
+        definition: 人头逾期率 = 第1期观察点4天逾期人数/到期人数（底表粒度为订单，实现为逾期件数/到期件数）。用户指定衍生指标，命名同dpd1_7cnt。
+        source: user_specified_derived
+      overdue_amt_1_5:
+        name: 逾期金额1_5
+        category: risk_overdue_amt
+        format: amount
+        aggregation: sum
+        numerator_field: overdue_amt_1_5
+        denominator_field: null
+        definition: 第1期观察点5天的逾期金额合计 = SUM(dpd1_5)，源字段 dws_risk_dpd_vintage_df.overdue_amt_1_5。
+        source: sql_metric_source
+        sql_expression: SUM(dpd1_5)
+      expire_amt_1_5:
+        name: 到期金额1_5
+        category: risk_expire_amt
+        format: amount
+        aggregation: sum
+        numerator_field: expire_amt_1_5
+        denominator_field: null
+        definition: 第1期观察点5天的到期本金合计 = SUM(expire_amt_1_5)，到期判定：overdue_amt_1_5非null，值为该单repay_principal。
+        source: sql_metric_source
+        sql_expression: SUM(expire_amt_1_5)
+      overdue_cnt_1_5:
+        name: 逾期件数1_5
+        category: risk_overdue_cnt
+        format: integer
+        aggregation: sum
+        numerator_field: overdue_cnt_1_5
+        denominator_field: null
+        definition: '第1期观察点5天逾期的订单数 = SUM(overdue_cnt_1_5)，overdue_cnt=1当overdue_amt_1_5>0。'
+        source: sql_metric_source
+        sql_expression: SUM(overdue_cnt_1_5)
+      expire_cnt_1_5:
+        name: 到期件数1_5
+        category: risk_expire_cnt
+        format: integer
+        aggregation: sum
+        numerator_field: expire_cnt_1_5
+        denominator_field: null
+        definition: 第1期观察点5天到期的订单数 = SUM(expire_cnt_1_5)，到期判定：overdue_amt_1_5非null。
+        source: sql_metric_source
+        sql_expression: SUM(expire_cnt_1_5)
+      dpd1_5:
+        name: 1_5金额逾期率
+        category: risk_rate_amt
+        format: percent
+        aggregation: ratio
+        numerator_field: overdue_amt_1_5
+        denominator_field: expire_amt_1_5
+        formula: overdue_amt_1_5/expire_amt_1_5
+        definition: 金额逾期率 = 第1期观察点5天逾期金额/到期本金。按pivot中dpd1_7/dpd2_7/dpd3_7同口径扩展。
+        source: sql_metric_source
+      dpd1_5cnt:
+        name: dpd1_5cnt人头逾期率
+        category: risk_rate_cnt
+        format: percent
+        aggregation: ratio
+        numerator_field: overdue_cnt_1_5
+        denominator_field: expire_cnt_1_5
+        formula: overdue_cnt_1_5/expire_cnt_1_5
+        definition: 人头逾期率 = 第1期观察点5天逾期人数/到期人数（底表粒度为订单，实现为逾期件数/到期件数）。用户指定衍生指标，命名同dpd1_7cnt。
+        source: user_specified_derived
+      overdue_amt_1_7:
+        name: 逾期金额1_7
+        category: risk_overdue_amt
+        format: amount
+        aggregation: sum
+        numerator_field: overdue_amt_1_7
+        denominator_field: null
+        definition: 第1期观察点7天的逾期金额合计 = SUM(dpd1_7)，源字段 dws_risk_dpd_vintage_df.overdue_amt_1_7。
+        source: sql_metric_source
+        sql_expression: SUM(dpd1_7)
+      expire_amt_1_7:
+        name: 到期金额1_7
+        category: risk_expire_amt
+        format: amount
+        aggregation: sum
+        numerator_field: expire_amt_1_7
+        denominator_field: null
+        definition: 第1期观察点7天的到期本金合计 = SUM(expire_amt_1_7)，到期判定：overdue_amt_1_7非null，值为该单repay_principal。
+        source: sql_metric_source
+        sql_expression: SUM(expire_amt_1_7)
+      overdue_cnt_1_7:
+        name: 逾期件数1_7
+        category: risk_overdue_cnt
+        format: integer
+        aggregation: sum
+        numerator_field: overdue_cnt_1_7
+        denominator_field: null
+        definition: '第1期观察点7天逾期的订单数 = SUM(overdue_cnt_1_7)，overdue_cnt=1当overdue_amt_1_7>0。'
+        source: sql_metric_source
+        sql_expression: SUM(overdue_cnt_1_7)
+      expire_cnt_1_7:
+        name: 到期件数1_7
+        category: risk_expire_cnt
+        format: integer
+        aggregation: sum
+        numerator_field: expire_cnt_1_7
+        denominator_field: null
+        definition: '第1期观察点7天到期的订单数 = SUM(expire_cnt_1_7)，到期判定：overdue_amt_1_7非null。pivot列：求和项:expire_cnt_1_7。'
+        source: excel_pivot_formula_confirmed
+        sql_expression: SUM(expire_cnt_1_7)
+      dpd1_7:
+        name: 1_7金额逾期率
+        category: risk_rate_amt
+        format: percent
+        aggregation: ratio
+        numerator_field: overdue_amt_1_7
+        denominator_field: expire_amt_1_7
+        formula: overdue_amt_1_7/expire_amt_1_7
+        definition: '金额逾期率 = 第1期观察点7天逾期金额/到期本金。pivot列：求和项:dpd1_7。'
+        source: excel_pivot_formula_confirmed
+      dpd1_7cnt:
+        name: dpd1_7cnt人头逾期率
+        category: risk_rate_cnt
+        format: percent
+        aggregation: ratio
+        numerator_field: overdue_cnt_1_7
+        denominator_field: expire_cnt_1_7
+        formula: overdue_cnt_1_7/expire_cnt_1_7
+        definition: 人头逾期率 = 第1期观察点7天逾期人数/到期人数（底表粒度为订单，实现为逾期件数/到期件数）。用户指定衍生指标，命名同dpd1_7cnt。
+        source: user_specified_derived
+      overdue_amt_1_10:
+        name: 逾期金额1_10
+        category: risk_overdue_amt
+        format: amount
+        aggregation: sum
+        numerator_field: overdue_amt_1_10
+        denominator_field: null
+        definition: 第1期观察点10天的逾期金额合计 = SUM(dpd1_10)，源字段 dws_risk_dpd_vintage_df.overdue_amt_1_10。
+        source: sql_metric_source
+        sql_expression: SUM(dpd1_10)
+      expire_amt_1_10:
+        name: 到期金额1_10
+        category: risk_expire_amt
+        format: amount
+        aggregation: sum
+        numerator_field: expire_amt_1_10
+        denominator_field: null
+        definition: 第1期观察点10天的到期本金合计 = SUM(expire_amt_1_10)，到期判定：overdue_amt_1_10非null，值为该单repay_principal。
+        source: sql_metric_source
+        sql_expression: SUM(expire_amt_1_10)
+      overdue_cnt_1_10:
+        name: 逾期件数1_10
+        category: risk_overdue_cnt
+        format: integer
+        aggregation: sum
+        numerator_field: overdue_cnt_1_10
+        denominator_field: null
+        definition: '第1期观察点10天逾期的订单数 = SUM(overdue_cnt_1_10)，overdue_cnt=1当overdue_amt_1_10>0。'
+        source: sql_metric_source
+        sql_expression: SUM(overdue_cnt_1_10)
+      expire_cnt_1_10:
+        name: 到期件数1_10
+        category: risk_expire_cnt
+        format: integer
+        aggregation: sum
+        numerator_field: expire_cnt_1_10
+        denominator_field: null
+        definition: 第1期观察点10天到期的订单数 = SUM(expire_cnt_1_10)，到期判定：overdue_amt_1_10非null。
+        source: sql_metric_source
+        sql_expression: SUM(expire_cnt_1_10)
+      dpd1_10:
+        name: 1_10金额逾期率
+        category: risk_rate_amt
+        format: percent
+        aggregation: ratio
+        numerator_field: overdue_amt_1_10
+        denominator_field: expire_amt_1_10
+        formula: overdue_amt_1_10/expire_amt_1_10
+        definition: 金额逾期率 = 第1期观察点10天逾期金额/到期本金。按pivot中dpd1_7/dpd2_7/dpd3_7同口径扩展。
+        source: sql_metric_source
+      dpd1_10cnt:
+        name: dpd1_10cnt人头逾期率
+        category: risk_rate_cnt
+        format: percent
+        aggregation: ratio
+        numerator_field: overdue_cnt_1_10
+        denominator_field: expire_cnt_1_10
+        formula: overdue_cnt_1_10/expire_cnt_1_10
+        definition: 人头逾期率 = 第1期观察点10天逾期人数/到期人数（底表粒度为订单，实现为逾期件数/到期件数）。用户指定衍生指标，命名同dpd1_7cnt。
+        source: user_specified_derived
+      overdue_amt_1_15:
+        name: 逾期金额1_15
+        category: risk_overdue_amt
+        format: amount
+        aggregation: sum
+        numerator_field: overdue_amt_1_15
+        denominator_field: null
+        definition: 第1期观察点15天的逾期金额合计 = SUM(dpd1_15)，源字段 dws_risk_dpd_vintage_df.overdue_amt_1_15。
+        source: sql_metric_source
+        sql_expression: SUM(dpd1_15)
+      expire_amt_1_15:
+        name: 到期金额1_15
+        category: risk_expire_amt
+        format: amount
+        aggregation: sum
+        numerator_field: expire_amt_1_15
+        denominator_field: null
+        definition: 第1期观察点15天的到期本金合计 = SUM(expire_amt_1_15)，到期判定：overdue_amt_1_15非null，值为该单repay_principal。
+        source: sql_metric_source
+        sql_expression: SUM(expire_amt_1_15)
+      overdue_cnt_1_15:
+        name: 逾期件数1_15
+        category: risk_overdue_cnt
+        format: integer
+        aggregation: sum
+        numerator_field: overdue_cnt_1_15
+        denominator_field: null
+        definition: '第1期观察点15天逾期的订单数 = SUM(overdue_cnt_1_15)，overdue_cnt=1当overdue_amt_1_15>0。'
+        source: sql_metric_source
+        sql_expression: SUM(overdue_cnt_1_15)
+      expire_cnt_1_15:
+        name: 到期件数1_15
+        category: risk_expire_cnt
+        format: integer
+        aggregation: sum
+        numerator_field: expire_cnt_1_15
+        denominator_field: null
+        definition: 第1期观察点15天到期的订单数 = SUM(expire_cnt_1_15)，到期判定：overdue_amt_1_15非null。
+        source: sql_metric_source
+        sql_expression: SUM(expire_cnt_1_15)
+      dpd1_15:
+        name: 1_15金额逾期率
+        category: risk_rate_amt
+        format: percent
+        aggregation: ratio
+        numerator_field: overdue_amt_1_15
+        denominator_field: expire_amt_1_15
+        formula: overdue_amt_1_15/expire_amt_1_15
+        definition: 金额逾期率 = 第1期观察点15天逾期金额/到期本金。按pivot中dpd1_7/dpd2_7/dpd3_7同口径扩展。
+        source: sql_metric_source
+      dpd1_15cnt:
+        name: dpd1_15cnt人头逾期率
+        category: risk_rate_cnt
+        format: percent
+        aggregation: ratio
+        numerator_field: overdue_cnt_1_15
+        denominator_field: expire_cnt_1_15
+        formula: overdue_cnt_1_15/expire_cnt_1_15
+        definition: 人头逾期率 = 第1期观察点15天逾期人数/到期人数（底表粒度为订单，实现为逾期件数/到期件数）。用户指定衍生指标，命名同dpd1_7cnt。
+        source: user_specified_derived
+      overdue_amt_2_1:
+        name: 逾期金额2_1
+        category: risk_overdue_amt
+        format: amount
+        aggregation: sum
+        numerator_field: overdue_amt_2_1
+        denominator_field: null
+        definition: 第2期观察点1天的逾期金额合计 = SUM(dpd2_1)，源字段 dws_risk_dpd_vintage_df.overdue_amt_2_1。
+        source: sql_metric_source
+        sql_expression: SUM(dpd2_1)
+      expire_amt_2_1:
+        name: 到期金额2_1
+        category: risk_expire_amt
+        format: amount
+        aggregation: sum
+        numerator_field: expire_amt_2_1
+        denominator_field: null
+        definition: 第2期观察点1天的到期本金合计 = SUM(expire_amt_2_1)，到期判定：overdue_amt_2_1非null，值为该单repay_principal。
+        source: sql_metric_source
+        sql_expression: SUM(expire_amt_2_1)
+      overdue_cnt_2_1:
+        name: 逾期件数2_1
+        category: risk_overdue_cnt
+        format: integer
+        aggregation: sum
+        numerator_field: overdue_cnt_2_1
+        denominator_field: null
+        definition: '第2期观察点1天逾期的订单数 = SUM(overdue_cnt_2_1)，overdue_cnt=1当overdue_amt_2_1>0。'
+        source: sql_metric_source
+        sql_expression: SUM(overdue_cnt_2_1)
+      expire_cnt_2_1:
+        name: 到期件数2_1
+        category: risk_expire_cnt
+        format: integer
+        aggregation: sum
+        numerator_field: expire_cnt_2_1
+        denominator_field: null
+        definition: 第2期观察点1天到期的订单数 = SUM(expire_cnt_2_1)，到期判定：overdue_amt_2_1非null。
+        source: sql_metric_source
+        sql_expression: SUM(expire_cnt_2_1)
+      dpd2_1:
+        name: 2_1金额逾期率
+        category: risk_rate_amt
+        format: percent
+        aggregation: ratio
+        numerator_field: overdue_amt_2_1
+        denominator_field: expire_amt_2_1
+        formula: overdue_amt_2_1/expire_amt_2_1
+        definition: 金额逾期率 = 第2期观察点1天逾期金额/到期本金。按pivot中dpd1_7/dpd2_7/dpd3_7同口径扩展。
+        source: sql_metric_source
+      dpd2_1cnt:
+        name: dpd2_1cnt人头逾期率
+        category: risk_rate_cnt
+        format: percent
+        aggregation: ratio
+        numerator_field: overdue_cnt_2_1
+        denominator_field: expire_cnt_2_1
+        formula: overdue_cnt_2_1/expire_cnt_2_1
+        definition: 人头逾期率 = 第2期观察点1天逾期人数/到期人数（底表粒度为订单，实现为逾期件数/到期件数）。用户指定衍生指标，命名同dpd1_7cnt。
+        source: user_specified_derived
+      overdue_amt_2_2:
+        name: 逾期金额2_2
+        category: risk_overdue_amt
+        format: amount
+        aggregation: sum
+        numerator_field: overdue_amt_2_2
+        denominator_field: null
+        definition: 第2期观察点2天的逾期金额合计 = SUM(dpd2_2)，源字段 dws_risk_dpd_vintage_df.overdue_amt_2_2。
+        source: sql_metric_source
+        sql_expression: SUM(dpd2_2)
+      expire_amt_2_2:
+        name: 到期金额2_2
+        category: risk_expire_amt
+        format: amount
+        aggregation: sum
+        numerator_field: expire_amt_2_2
+        denominator_field: null
+        definition: 第2期观察点2天的到期本金合计 = SUM(expire_amt_2_2)，到期判定：overdue_amt_2_2非null，值为该单repay_principal。
+        source: sql_metric_source
+        sql_expression: SUM(expire_amt_2_2)
+      overdue_cnt_2_2:
+        name: 逾期件数2_2
+        category: risk_overdue_cnt
+        format: integer
+        aggregation: sum
+        numerator_field: overdue_cnt_2_2
+        denominator_field: null
+        definition: '第2期观察点2天逾期的订单数 = SUM(overdue_cnt_2_2)，overdue_cnt=1当overdue_amt_2_2>0。'
+        source: sql_metric_source
+        sql_expression: SUM(overdue_cnt_2_2)
+      expire_cnt_2_2:
+        name: 到期件数2_2
+        category: risk_expire_cnt
+        format: integer
+        aggregation: sum
+        numerator_field: expire_cnt_2_2
+        denominator_field: null
+        definition: 第2期观察点2天到期的订单数 = SUM(expire_cnt_2_2)，到期判定：overdue_amt_2_2非null。
+        source: sql_metric_source
+        sql_expression: SUM(expire_cnt_2_2)
+      dpd2_2:
+        name: 2_2金额逾期率
+        category: risk_rate_amt
+        format: percent
+        aggregation: ratio
+        numerator_field: overdue_amt_2_2
+        denominator_field: expire_amt_2_2
+        formula: overdue_amt_2_2/expire_amt_2_2
+        definition: 金额逾期率 = 第2期观察点2天逾期金额/到期本金。按pivot中dpd1_7/dpd2_7/dpd3_7同口径扩展。
+        source: sql_metric_source
+      dpd2_2cnt:
+        name: dpd2_2cnt人头逾期率
+        category: risk_rate_cnt
+        format: percent
+        aggregation: ratio
+        numerator_field: overdue_cnt_2_2
+        denominator_field: expire_cnt_2_2
+        formula: overdue_cnt_2_2/expire_cnt_2_2
+        definition: 人头逾期率 = 第2期观察点2天逾期人数/到期人数（底表粒度为订单，实现为逾期件数/到期件数）。用户指定衍生指标，命名同dpd1_7cnt。
+        source: user_specified_derived
+      overdue_amt_2_3:
+        name: 逾期金额2_3
+        category: risk_overdue_amt
+        format: amount
+        aggregation: sum
+        numerator_field: overdue_amt_2_3
+        denominator_field: null
+        definition: 第2期观察点3天的逾期金额合计 = SUM(dpd2_3)，源字段 dws_risk_dpd_vintage_df.overdue_amt_2_3。
+        source: sql_metric_source
+        sql_expression: SUM(dpd2_3)
+      expire_amt_2_3:
+        name: 到期金额2_3
+        category: risk_expire_amt
+        format: amount
+        aggregation: sum
+        numerator_field: expire_amt_2_3
+        denominator_field: null
+        definition: 第2期观察点3天的到期本金合计 = SUM(expire_amt_2_3)，到期判定：overdue_amt_2_3非null，值为该单repay_principal。
+        source: sql_metric_source
+        sql_expression: SUM(expire_amt_2_3)
+      overdue_cnt_2_3:
+        name: 逾期件数2_3
+        category: risk_overdue_cnt
+        format: integer
+        aggregation: sum
+        numerator_field: overdue_cnt_2_3
+        denominator_field: null
+        definition: '第2期观察点3天逾期的订单数 = SUM(overdue_cnt_2_3)，overdue_cnt=1当overdue_amt_2_3>0。'
+        source: sql_metric_source
+        sql_expression: SUM(overdue_cnt_2_3)
+      expire_cnt_2_3:
+        name: 到期件数2_3
+        category: risk_expire_cnt
+        format: integer
+        aggregation: sum
+        numerator_field: expire_cnt_2_3
+        denominator_field: null
+        definition: 第2期观察点3天到期的订单数 = SUM(expire_cnt_2_3)，到期判定：overdue_amt_2_3非null。
+        source: sql_metric_source
+        sql_expression: SUM(expire_cnt_2_3)
+      dpd2_3:
+        name: 2_3金额逾期率
+        category: risk_rate_amt
+        format: percent
+        aggregation: ratio
+        numerator_field: overdue_amt_2_3
+        denominator_field: expire_amt_2_3
+        formula: overdue_amt_2_3/expire_amt_2_3
+        definition: 金额逾期率 = 第2期观察点3天逾期金额/到期本金。按pivot中dpd1_7/dpd2_7/dpd3_7同口径扩展。
+        source: sql_metric_source
+      dpd2_3cnt:
+        name: dpd2_3cnt人头逾期率
+        category: risk_rate_cnt
+        format: percent
+        aggregation: ratio
+        numerator_field: overdue_cnt_2_3
+        denominator_field: expire_cnt_2_3
+        formula: overdue_cnt_2_3/expire_cnt_2_3
+        definition: 人头逾期率 = 第2期观察点3天逾期人数/到期人数（底表粒度为订单，实现为逾期件数/到期件数）。用户指定衍生指标，命名同dpd1_7cnt。
+        source: user_specified_derived
+      overdue_amt_2_4:
+        name: 逾期金额2_4
+        category: risk_overdue_amt
+        format: amount
+        aggregation: sum
+        numerator_field: overdue_amt_2_4
+        denominator_field: null
+        definition: 第2期观察点4天的逾期金额合计 = SUM(dpd2_4)，源字段 dws_risk_dpd_vintage_df.overdue_amt_2_4。
+        source: sql_metric_source
+        sql_expression: SUM(dpd2_4)
+      expire_amt_2_4:
+        name: 到期金额2_4
+        category: risk_expire_amt
+        format: amount
+        aggregation: sum
+        numerator_field: expire_amt_2_4
+        denominator_field: null
+        definition: 第2期观察点4天的到期本金合计 = SUM(expire_amt_2_4)，到期判定：overdue_amt_2_4非null，值为该单repay_principal。
+        source: sql_metric_source
+        sql_expression: SUM(expire_amt_2_4)
+      overdue_cnt_2_4:
+        name: 逾期件数2_4
+        category: risk_overdue_cnt
+        format: integer
+        aggregation: sum
+        numerator_field: overdue_cnt_2_4
+        denominator_field: null
+        definition: '第2期观察点4天逾期的订单数 = SUM(overdue_cnt_2_4)，overdue_cnt=1当overdue_amt_2_4>0。'
+        source: sql_metric_source
+        sql_expression: SUM(overdue_cnt_2_4)
+      expire_cnt_2_4:
+        name: 到期件数2_4
+        category: risk_expire_cnt
+        format: integer
+        aggregation: sum
+        numerator_field: expire_cnt_2_4
+        denominator_field: null
+        definition: 第2期观察点4天到期的订单数 = SUM(expire_cnt_2_4)，到期判定：overdue_amt_2_4非null。
+        source: sql_metric_source
+        sql_expression: SUM(expire_cnt_2_4)
+      dpd2_4:
+        name: 2_4金额逾期率
+        category: risk_rate_amt
+        format: percent
+        aggregation: ratio
+        numerator_field: overdue_amt_2_4
+        denominator_field: expire_amt_2_4
+        formula: overdue_amt_2_4/expire_amt_2_4
+        definition: 金额逾期率 = 第2期观察点4天逾期金额/到期本金。按pivot中dpd1_7/dpd2_7/dpd3_7同口径扩展。
+        source: sql_metric_source
+      dpd2_4cnt:
+        name: dpd2_4cnt人头逾期率
+        category: risk_rate_cnt
+        format: percent
+        aggregation: ratio
+        numerator_field: overdue_cnt_2_4
+        denominator_field: expire_cnt_2_4
+        formula: overdue_cnt_2_4/expire_cnt_2_4
+        definition: 人头逾期率 = 第2期观察点4天逾期人数/到期人数（底表粒度为订单，实现为逾期件数/到期件数）。用户指定衍生指标，命名同dpd1_7cnt。
+        source: user_specified_derived
+      overdue_amt_2_5:
+        name: 逾期金额2_5
+        category: risk_overdue_amt
+        format: amount
+        aggregation: sum
+        numerator_field: overdue_amt_2_5
+        denominator_field: null
+        definition: 第2期观察点5天的逾期金额合计 = SUM(dpd2_5)，源字段 dws_risk_dpd_vintage_df.overdue_amt_2_5。
+        source: sql_metric_source
+        sql_expression: SUM(dpd2_5)
+      expire_amt_2_5:
+        name: 到期金额2_5
+        category: risk_expire_amt
+        format: amount
+        aggregation: sum
+        numerator_field: expire_amt_2_5
+        denominator_field: null
+        definition: 第2期观察点5天的到期本金合计 = SUM(expire_amt_2_5)，到期判定：overdue_amt_2_5非null，值为该单repay_principal。
+        source: sql_metric_source
+        sql_expression: SUM(expire_amt_2_5)
+      overdue_cnt_2_5:
+        name: 逾期件数2_5
+        category: risk_overdue_cnt
+        format: integer
+        aggregation: sum
+        numerator_field: overdue_cnt_2_5
+        denominator_field: null
+        definition: '第2期观察点5天逾期的订单数 = SUM(overdue_cnt_2_5)，overdue_cnt=1当overdue_amt_2_5>0。'
+        source: sql_metric_source
+        sql_expression: SUM(overdue_cnt_2_5)
+      expire_cnt_2_5:
+        name: 到期件数2_5
+        category: risk_expire_cnt
+        format: integer
+        aggregation: sum
+        numerator_field: expire_cnt_2_5
+        denominator_field: null
+        definition: 第2期观察点5天到期的订单数 = SUM(expire_cnt_2_5)，到期判定：overdue_amt_2_5非null。
+        source: sql_metric_source
+        sql_expression: SUM(expire_cnt_2_5)
+      dpd2_5:
+        name: 2_5金额逾期率
+        category: risk_rate_amt
+        format: percent
+        aggregation: ratio
+        numerator_field: overdue_amt_2_5
+        denominator_field: expire_amt_2_5
+        formula: overdue_amt_2_5/expire_amt_2_5
+        definition: 金额逾期率 = 第2期观察点5天逾期金额/到期本金。按pivot中dpd1_7/dpd2_7/dpd3_7同口径扩展。
+        source: sql_metric_source
+      dpd2_5cnt:
+        name: dpd2_5cnt人头逾期率
+        category: risk_rate_cnt
+        format: percent
+        aggregation: ratio
+        numerator_field: overdue_cnt_2_5
+        denominator_field: expire_cnt_2_5
+        formula: overdue_cnt_2_5/expire_cnt_2_5
+        definition: 人头逾期率 = 第2期观察点5天逾期人数/到期人数（底表粒度为订单，实现为逾期件数/到期件数）。用户指定衍生指标，命名同dpd1_7cnt。
+        source: user_specified_derived
+      overdue_amt_2_7:
+        name: 逾期金额2_7
+        category: risk_overdue_amt
+        format: amount
+        aggregation: sum
+        numerator_field: overdue_amt_2_7
+        denominator_field: null
+        definition: 第2期观察点7天的逾期金额合计 = SUM(dpd2_7)，源字段 dws_risk_dpd_vintage_df.overdue_amt_2_7。
+        source: sql_metric_source
+        sql_expression: SUM(dpd2_7)
+      expire_amt_2_7:
+        name: 到期金额2_7
+        category: risk_expire_amt
+        format: amount
+        aggregation: sum
+        numerator_field: expire_amt_2_7
+        denominator_field: null
+        definition: 第2期观察点7天的到期本金合计 = SUM(expire_amt_2_7)，到期判定：overdue_amt_2_7非null，值为该单repay_principal。
+        source: sql_metric_source
+        sql_expression: SUM(expire_amt_2_7)
+      overdue_cnt_2_7:
+        name: 逾期件数2_7
+        category: risk_overdue_cnt
+        format: integer
+        aggregation: sum
+        numerator_field: overdue_cnt_2_7
+        denominator_field: null
+        definition: '第2期观察点7天逾期的订单数 = SUM(overdue_cnt_2_7)，overdue_cnt=1当overdue_amt_2_7>0。'
+        source: sql_metric_source
+        sql_expression: SUM(overdue_cnt_2_7)
+      expire_cnt_2_7:
+        name: 到期件数2_7
+        category: risk_expire_cnt
+        format: integer
+        aggregation: sum
+        numerator_field: expire_cnt_2_7
+        denominator_field: null
+        definition: '第2期观察点7天到期的订单数 = SUM(expire_cnt_2_7)，到期判定：overdue_amt_2_7非null。pivot列：求和项:expire_cnt_2_7。'
+        source: excel_pivot_formula_confirmed
+        sql_expression: SUM(expire_cnt_2_7)
+      dpd2_7:
+        name: 2_7金额逾期率
+        category: risk_rate_amt
+        format: percent
+        aggregation: ratio
+        numerator_field: overdue_amt_2_7
+        denominator_field: expire_amt_2_7
+        formula: overdue_amt_2_7/expire_amt_2_7
+        definition: '金额逾期率 = 第2期观察点7天逾期金额/到期本金。pivot列：求和项:dpd2_7。'
+        source: excel_pivot_formula_confirmed
+      dpd2_7cnt:
+        name: dpd2_7cnt人头逾期率
+        category: risk_rate_cnt
+        format: percent
+        aggregation: ratio
+        numerator_field: overdue_cnt_2_7
+        denominator_field: expire_cnt_2_7
+        formula: overdue_cnt_2_7/expire_cnt_2_7
+        definition: 人头逾期率 = 第2期观察点7天逾期人数/到期人数（底表粒度为订单，实现为逾期件数/到期件数）。用户指定衍生指标，命名同dpd1_7cnt。
+        source: user_specified_derived
+      overdue_amt_2_10:
+        name: 逾期金额2_10
+        category: risk_overdue_amt
+        format: amount
+        aggregation: sum
+        numerator_field: overdue_amt_2_10
+        denominator_field: null
+        definition: 第2期观察点10天的逾期金额合计 = SUM(dpd2_10)，源字段 dws_risk_dpd_vintage_df.overdue_amt_2_10。
+        source: sql_metric_source
+        sql_expression: SUM(dpd2_10)
+      expire_amt_2_10:
+        name: 到期金额2_10
+        category: risk_expire_amt
+        format: amount
+        aggregation: sum
+        numerator_field: expire_amt_2_10
+        denominator_field: null
+        definition: 第2期观察点10天的到期本金合计 = SUM(expire_amt_2_10)，到期判定：overdue_amt_2_10非null，值为该单repay_principal。
+        source: sql_metric_source
+        sql_expression: SUM(expire_amt_2_10)
+      overdue_cnt_2_10:
+        name: 逾期件数2_10
+        category: risk_overdue_cnt
+        format: integer
+        aggregation: sum
+        numerator_field: overdue_cnt_2_10
+        denominator_field: null
+        definition: '第2期观察点10天逾期的订单数 = SUM(overdue_cnt_2_10)，overdue_cnt=1当overdue_amt_2_10>0。'
+        source: sql_metric_source
+        sql_expression: SUM(overdue_cnt_2_10)
+      expire_cnt_2_10:
+        name: 到期件数2_10
+        category: risk_expire_cnt
+        format: integer
+        aggregation: sum
+        numerator_field: expire_cnt_2_10
+        denominator_field: null
+        definition: 第2期观察点10天到期的订单数 = SUM(expire_cnt_2_10)，到期判定：overdue_amt_2_10非null。
+        source: sql_metric_source
+        sql_expression: SUM(expire_cnt_2_10)
+      dpd2_10:
+        name: 2_10金额逾期率
+        category: risk_rate_amt
+        format: percent
+        aggregation: ratio
+        numerator_field: overdue_amt_2_10
+        denominator_field: expire_amt_2_10
+        formula: overdue_amt_2_10/expire_amt_2_10
+        definition: 金额逾期率 = 第2期观察点10天逾期金额/到期本金。按pivot中dpd1_7/dpd2_7/dpd3_7同口径扩展。
+        source: sql_metric_source
+      dpd2_10cnt:
+        name: dpd2_10cnt人头逾期率
+        category: risk_rate_cnt
+        format: percent
+        aggregation: ratio
+        numerator_field: overdue_cnt_2_10
+        denominator_field: expire_cnt_2_10
+        formula: overdue_cnt_2_10/expire_cnt_2_10
+        definition: 人头逾期率 = 第2期观察点10天逾期人数/到期人数（底表粒度为订单，实现为逾期件数/到期件数）。用户指定衍生指标，命名同dpd1_7cnt。
+        source: user_specified_derived
+      overdue_amt_2_15:
+        name: 逾期金额2_15
+        category: risk_overdue_amt
+        format: amount
+        aggregation: sum
+        numerator_field: overdue_amt_2_15
+        denominator_field: null
+        definition: 第2期观察点15天的逾期金额合计 = SUM(dpd2_15)，源字段 dws_risk_dpd_vintage_df.overdue_amt_2_15。
+        source: sql_metric_source
+        sql_expression: SUM(dpd2_15)
+      expire_amt_2_15:
+        name: 到期金额2_15
+        category: risk_expire_amt
+        format: amount
+        aggregation: sum
+        numerator_field: expire_amt_2_15
+        denominator_field: null
+        definition: 第2期观察点15天的到期本金合计 = SUM(expire_amt_2_15)，到期判定：overdue_amt_2_15非null，值为该单repay_principal。
+        source: sql_metric_source
+        sql_expression: SUM(expire_amt_2_15)
+      overdue_cnt_2_15:
+        name: 逾期件数2_15
+        category: risk_overdue_cnt
+        format: integer
+        aggregation: sum
+        numerator_field: overdue_cnt_2_15
+        denominator_field: null
+        definition: '第2期观察点15天逾期的订单数 = SUM(overdue_cnt_2_15)，overdue_cnt=1当overdue_amt_2_15>0。'
+        source: sql_metric_source
+        sql_expression: SUM(overdue_cnt_2_15)
+      expire_cnt_2_15:
+        name: 到期件数2_15
+        category: risk_expire_cnt
+        format: integer
+        aggregation: sum
+        numerator_field: expire_cnt_2_15
+        denominator_field: null
+        definition: 第2期观察点15天到期的订单数 = SUM(expire_cnt_2_15)，到期判定：overdue_amt_2_15非null。
+        source: sql_metric_source
+        sql_expression: SUM(expire_cnt_2_15)
+      dpd2_15:
+        name: 2_15金额逾期率
+        category: risk_rate_amt
+        format: percent
+        aggregation: ratio
+        numerator_field: overdue_amt_2_15
+        denominator_field: expire_amt_2_15
+        formula: overdue_amt_2_15/expire_amt_2_15
+        definition: 金额逾期率 = 第2期观察点15天逾期金额/到期本金。按pivot中dpd1_7/dpd2_7/dpd3_7同口径扩展。
+        source: sql_metric_source
+      dpd2_15cnt:
+        name: dpd2_15cnt人头逾期率
+        category: risk_rate_cnt
+        format: percent
+        aggregation: ratio
+        numerator_field: overdue_cnt_2_15
+        denominator_field: expire_cnt_2_15
+        formula: overdue_cnt_2_15/expire_cnt_2_15
+        definition: 人头逾期率 = 第2期观察点15天逾期人数/到期人数（底表粒度为订单，实现为逾期件数/到期件数）。用户指定衍生指标，命名同dpd1_7cnt。
+        source: user_specified_derived
+      overdue_amt_3_1:
+        name: 逾期金额3_1
+        category: risk_overdue_amt
+        format: amount
+        aggregation: sum
+        numerator_field: overdue_amt_3_1
+        denominator_field: null
+        definition: 第3期观察点1天的逾期金额合计 = SUM(dpd3_1)，源字段 dws_risk_dpd_vintage_df.overdue_amt_3_1。
+        source: sql_metric_source
+        sql_expression: SUM(dpd3_1)
+      expire_amt_3_1:
+        name: 到期金额3_1
+        category: risk_expire_amt
+        format: amount
+        aggregation: sum
+        numerator_field: expire_amt_3_1
+        denominator_field: null
+        definition: 第3期观察点1天的到期本金合计 = SUM(expire_amt_3_1)，到期判定：overdue_amt_3_1非null，值为该单repay_principal。
+        source: sql_metric_source
+        sql_expression: SUM(expire_amt_3_1)
+      overdue_cnt_3_1:
+        name: 逾期件数3_1
+        category: risk_overdue_cnt
+        format: integer
+        aggregation: sum
+        numerator_field: overdue_cnt_3_1
+        denominator_field: null
+        definition: '第3期观察点1天逾期的订单数 = SUM(overdue_cnt_3_1)，overdue_cnt=1当overdue_amt_3_1>0。'
+        source: sql_metric_source
+        sql_expression: SUM(overdue_cnt_3_1)
+      expire_cnt_3_1:
+        name: 到期件数3_1
+        category: risk_expire_cnt
+        format: integer
+        aggregation: sum
+        numerator_field: expire_cnt_3_1
+        denominator_field: null
+        definition: 第3期观察点1天到期的订单数 = SUM(expire_cnt_3_1)，到期判定：overdue_amt_3_1非null。
+        source: sql_metric_source
+        sql_expression: SUM(expire_cnt_3_1)
+      dpd3_1:
+        name: 3_1金额逾期率
+        category: risk_rate_amt
+        format: percent
+        aggregation: ratio
+        numerator_field: overdue_amt_3_1
+        denominator_field: expire_amt_3_1
+        formula: overdue_amt_3_1/expire_amt_3_1
+        definition: 金额逾期率 = 第3期观察点1天逾期金额/到期本金。按pivot中dpd1_7/dpd2_7/dpd3_7同口径扩展。
+        source: sql_metric_source
+      dpd3_1cnt:
+        name: dpd3_1cnt人头逾期率
+        category: risk_rate_cnt
+        format: percent
+        aggregation: ratio
+        numerator_field: overdue_cnt_3_1
+        denominator_field: expire_cnt_3_1
+        formula: overdue_cnt_3_1/expire_cnt_3_1
+        definition: 人头逾期率 = 第3期观察点1天逾期人数/到期人数（底表粒度为订单，实现为逾期件数/到期件数）。用户指定衍生指标，命名同dpd1_7cnt。
+        source: user_specified_derived
+      overdue_amt_3_3:
+        name: 逾期金额3_3
+        category: risk_overdue_amt
+        format: amount
+        aggregation: sum
+        numerator_field: overdue_amt_3_3
+        denominator_field: null
+        definition: 第3期观察点3天的逾期金额合计 = SUM(dpd3_3)，源字段 dws_risk_dpd_vintage_df.overdue_amt_3_3。
+        source: sql_metric_source
+        sql_expression: SUM(dpd3_3)
+      expire_amt_3_3:
+        name: 到期金额3_3
+        category: risk_expire_amt
+        format: amount
+        aggregation: sum
+        numerator_field: expire_amt_3_3
+        denominator_field: null
+        definition: 第3期观察点3天的到期本金合计 = SUM(expire_amt_3_3)，到期判定：overdue_amt_3_3非null，值为该单repay_principal。
+        source: sql_metric_source
+        sql_expression: SUM(expire_amt_3_3)
+      overdue_cnt_3_3:
+        name: 逾期件数3_3
+        category: risk_overdue_cnt
+        format: integer
+        aggregation: sum
+        numerator_field: overdue_cnt_3_3
+        denominator_field: null
+        definition: '第3期观察点3天逾期的订单数 = SUM(overdue_cnt_3_3)，overdue_cnt=1当overdue_amt_3_3>0。'
+        source: sql_metric_source
+        sql_expression: SUM(overdue_cnt_3_3)
+      expire_cnt_3_3:
+        name: 到期件数3_3
+        category: risk_expire_cnt
+        format: integer
+        aggregation: sum
+        numerator_field: expire_cnt_3_3
+        denominator_field: null
+        definition: 第3期观察点3天到期的订单数 = SUM(expire_cnt_3_3)，到期判定：overdue_amt_3_3非null。
+        source: sql_metric_source
+        sql_expression: SUM(expire_cnt_3_3)
+      dpd3_3:
+        name: 3_3金额逾期率
+        category: risk_rate_amt
+        format: percent
+        aggregation: ratio
+        numerator_field: overdue_amt_3_3
+        denominator_field: expire_amt_3_3
+        formula: overdue_amt_3_3/expire_amt_3_3
+        definition: 金额逾期率 = 第3期观察点3天逾期金额/到期本金。按pivot中dpd1_7/dpd2_7/dpd3_7同口径扩展。
+        source: sql_metric_source
+      dpd3_3cnt:
+        name: dpd3_3cnt人头逾期率
+        category: risk_rate_cnt
+        format: percent
+        aggregation: ratio
+        numerator_field: overdue_cnt_3_3
+        denominator_field: expire_cnt_3_3
+        formula: overdue_cnt_3_3/expire_cnt_3_3
+        definition: 人头逾期率 = 第3期观察点3天逾期人数/到期人数（底表粒度为订单，实现为逾期件数/到期件数）。用户指定衍生指标，命名同dpd1_7cnt。
+        source: user_specified_derived
+      overdue_amt_3_7:
+        name: 逾期金额3_7
+        category: risk_overdue_amt
+        format: amount
+        aggregation: sum
+        numerator_field: overdue_amt_3_7
+        denominator_field: null
+        definition: 第3期观察点7天的逾期金额合计 = SUM(dpd3_7)，源字段 dws_risk_dpd_vintage_df.overdue_amt_3_7。
+        source: sql_metric_source
+        sql_expression: SUM(dpd3_7)
+      expire_amt_3_7:
+        name: 到期金额3_7
+        category: risk_expire_amt
+        format: amount
+        aggregation: sum
+        numerator_field: expire_amt_3_7
+        denominator_field: null
+        definition: 第3期观察点7天的到期本金合计 = SUM(expire_amt_3_7)，到期判定：overdue_amt_3_7非null，值为该单repay_principal。
+        source: sql_metric_source
+        sql_expression: SUM(expire_amt_3_7)
+      overdue_cnt_3_7:
+        name: 逾期件数3_7
+        category: risk_overdue_cnt
+        format: integer
+        aggregation: sum
+        numerator_field: overdue_cnt_3_7
+        denominator_field: null
+        definition: '第3期观察点7天逾期的订单数 = SUM(overdue_cnt_3_7)，overdue_cnt=1当overdue_amt_3_7>0。'
+        source: sql_metric_source
+        sql_expression: SUM(overdue_cnt_3_7)
+      expire_cnt_3_7:
+        name: 到期件数3_7
+        category: risk_expire_cnt
+        format: integer
+        aggregation: sum
+        numerator_field: expire_cnt_3_7
+        denominator_field: null
+        definition: '第3期观察点7天到期的订单数 = SUM(expire_cnt_3_7)，到期判定：overdue_amt_3_7非null。pivot列：求和项:expire_cnt_3_7。'
+        source: excel_pivot_formula_confirmed
+        sql_expression: SUM(expire_cnt_3_7)
+      dpd3_7:
+        name: 3_7金额逾期率
+        category: risk_rate_amt
+        format: percent
+        aggregation: ratio
+        numerator_field: overdue_amt_3_7
+        denominator_field: expire_amt_3_7
+        formula: overdue_amt_3_7/expire_amt_3_7
+        definition: '金额逾期率 = 第3期观察点7天逾期金额/到期本金。pivot列：求和项:dpd3_7。'
+        source: excel_pivot_formula_confirmed
+      dpd3_7cnt:
+        name: dpd3_7cnt人头逾期率
+        category: risk_rate_cnt
+        format: percent
+        aggregation: ratio
+        numerator_field: overdue_cnt_3_7
+        denominator_field: expire_cnt_3_7
+        formula: overdue_cnt_3_7/expire_cnt_3_7
+        definition: 人头逾期率 = 第3期观察点7天逾期人数/到期人数（底表粒度为订单，实现为逾期件数/到期件数）。用户指定衍生指标，命名同dpd1_7cnt。
+        source: user_specified_derived
+      overdue_amt_3_15:
+        name: 逾期金额3_15
+        category: risk_overdue_amt
+        format: amount
+        aggregation: sum
+        numerator_field: overdue_amt_3_15
+        denominator_field: null
+        definition: 第3期观察点15天的逾期金额合计 = SUM(dpd3_15)，源字段 dws_risk_dpd_vintage_df.overdue_amt_3_15。
+        source: sql_metric_source
+        sql_expression: SUM(dpd3_15)
+      expire_amt_3_15:
+        name: 到期金额3_15
+        category: risk_expire_amt
+        format: amount
+        aggregation: sum
+        numerator_field: expire_amt_3_15
+        denominator_field: null
+        definition: 第3期观察点15天的到期本金合计 = SUM(expire_amt_3_15)，到期判定：overdue_amt_3_15非null，值为该单repay_principal。
+        source: sql_metric_source
+        sql_expression: SUM(expire_amt_3_15)
+      overdue_cnt_3_15:
+        name: 逾期件数3_15
+        category: risk_overdue_cnt
+        format: integer
+        aggregation: sum
+        numerator_field: overdue_cnt_3_15
+        denominator_field: null
+        definition: '第3期观察点15天逾期的订单数 = SUM(overdue_cnt_3_15)，overdue_cnt=1当overdue_amt_3_15>0。'
+        source: sql_metric_source
+        sql_expression: SUM(overdue_cnt_3_15)
+      expire_cnt_3_15:
+        name: 到期件数3_15
+        category: risk_expire_cnt
+        format: integer
+        aggregation: sum
+        numerator_field: expire_cnt_3_15
+        denominator_field: null
+        definition: 第3期观察点15天到期的订单数 = SUM(expire_cnt_3_15)，到期判定：overdue_amt_3_15非null。
+        source: sql_metric_source
+        sql_expression: SUM(expire_cnt_3_15)
+      dpd3_15:
+        name: 3_15金额逾期率
+        category: risk_rate_amt
+        format: percent
+        aggregation: ratio
+        numerator_field: overdue_amt_3_15
+        denominator_field: expire_amt_3_15
+        formula: overdue_amt_3_15/expire_amt_3_15
+        definition: 金额逾期率 = 第3期观察点15天逾期金额/到期本金。按pivot中dpd1_7/dpd2_7/dpd3_7同口径扩展。
+        source: sql_metric_source
+      dpd3_15cnt:
+        name: dpd3_15cnt人头逾期率
+        category: risk_rate_cnt
+        format: percent
+        aggregation: ratio
+        numerator_field: overdue_cnt_3_15
+        denominator_field: expire_cnt_3_15
+        formula: overdue_cnt_3_15/expire_cnt_3_15
+        definition: 人头逾期率 = 第3期观察点15天逾期人数/到期人数（底表粒度为订单，实现为逾期件数/到期件数）。用户指定衍生指标，命名同dpd1_7cnt。
+        source: user_specified_derived
+      overdue_amt_4_1:
+        name: 逾期金额4_1
+        category: risk_overdue_amt
+        format: amount
+        aggregation: sum
+        numerator_field: overdue_amt_4_1
+        denominator_field: null
+        definition: 第4期观察点1天的逾期金额合计 = SUM(dpd4_1)，源字段 dws_risk_dpd_vintage_df.overdue_amt_4_1。
+        source: sql_metric_source
+        sql_expression: SUM(dpd4_1)
+      expire_amt_4_1:
+        name: 到期金额4_1
+        category: risk_expire_amt
+        format: amount
+        aggregation: sum
+        numerator_field: expire_amt_4_1
+        denominator_field: null
+        definition: 第4期观察点1天的到期本金合计 = SUM(expire_amt_4_1)，到期判定：overdue_amt_4_1非null，值为该单repay_principal。
+        source: sql_metric_source
+        sql_expression: SUM(expire_amt_4_1)
+      overdue_cnt_4_1:
+        name: 逾期件数4_1
+        category: risk_overdue_cnt
+        format: integer
+        aggregation: sum
+        numerator_field: overdue_cnt_4_1
+        denominator_field: null
+        definition: '第4期观察点1天逾期的订单数 = SUM(overdue_cnt_4_1)，overdue_cnt=1当overdue_amt_4_1>0。'
+        source: sql_metric_source
+        sql_expression: SUM(overdue_cnt_4_1)
+      expire_cnt_4_1:
+        name: 到期件数4_1
+        category: risk_expire_cnt
+        format: integer
+        aggregation: sum
+        numerator_field: expire_cnt_4_1
+        denominator_field: null
+        definition: 第4期观察点1天到期的订单数 = SUM(expire_cnt_4_1)，到期判定：overdue_amt_4_1非null。
+        source: sql_metric_source
+        sql_expression: SUM(expire_cnt_4_1)
+      dpd4_1:
+        name: 4_1金额逾期率
+        category: risk_rate_amt
+        format: percent
+        aggregation: ratio
+        numerator_field: overdue_amt_4_1
+        denominator_field: expire_amt_4_1
+        formula: overdue_amt_4_1/expire_amt_4_1
+        definition: 金额逾期率 = 第4期观察点1天逾期金额/到期本金。按pivot中dpd1_7/dpd2_7/dpd3_7同口径扩展。
+        source: sql_metric_source
+      dpd4_1cnt:
+        name: dpd4_1cnt人头逾期率
+        category: risk_rate_cnt
+        format: percent
+        aggregation: ratio
+        numerator_field: overdue_cnt_4_1
+        denominator_field: expire_cnt_4_1
+        formula: overdue_cnt_4_1/expire_cnt_4_1
+        definition: 人头逾期率 = 第4期观察点1天逾期人数/到期人数（底表粒度为订单，实现为逾期件数/到期件数）。用户指定衍生指标，命名同dpd1_7cnt。
+        source: user_specified_derived
+      overdue_amt_4_3:
+        name: 逾期金额4_3
+        category: risk_overdue_amt
+        format: amount
+        aggregation: sum
+        numerator_field: overdue_amt_4_3
+        denominator_field: null
+        definition: 第4期观察点3天的逾期金额合计 = SUM(dpd4_3)，源字段 dws_risk_dpd_vintage_df.overdue_amt_4_3。
+        source: sql_metric_source
+        sql_expression: SUM(dpd4_3)
+      expire_amt_4_3:
+        name: 到期金额4_3
+        category: risk_expire_amt
+        format: amount
+        aggregation: sum
+        numerator_field: expire_amt_4_3
+        denominator_field: null
+        definition: 第4期观察点3天的到期本金合计 = SUM(expire_amt_4_3)，到期判定：overdue_amt_4_3非null，值为该单repay_principal。
+        source: sql_metric_source
+        sql_expression: SUM(expire_amt_4_3)
+      overdue_cnt_4_3:
+        name: 逾期件数4_3
+        category: risk_overdue_cnt
+        format: integer
+        aggregation: sum
+        numerator_field: overdue_cnt_4_3
+        denominator_field: null
+        definition: '第4期观察点3天逾期的订单数 = SUM(overdue_cnt_4_3)，overdue_cnt=1当overdue_amt_4_3>0。'
+        source: sql_metric_source
+        sql_expression: SUM(overdue_cnt_4_3)
+      expire_cnt_4_3:
+        name: 到期件数4_3
+        category: risk_expire_cnt
+        format: integer
+        aggregation: sum
+        numerator_field: expire_cnt_4_3
+        denominator_field: null
+        definition: 第4期观察点3天到期的订单数 = SUM(expire_cnt_4_3)，到期判定：overdue_amt_4_3非null。
+        source: sql_metric_source
+        sql_expression: SUM(expire_cnt_4_3)
+      dpd4_3:
+        name: 4_3金额逾期率
+        category: risk_rate_amt
+        format: percent
+        aggregation: ratio
+        numerator_field: overdue_amt_4_3
+        denominator_field: expire_amt_4_3
+        formula: overdue_amt_4_3/expire_amt_4_3
+        definition: 金额逾期率 = 第4期观察点3天逾期金额/到期本金。按pivot中dpd1_7/dpd2_7/dpd3_7同口径扩展。
+        source: sql_metric_source
+      dpd4_3cnt:
+        name: dpd4_3cnt人头逾期率
+        category: risk_rate_cnt
+        format: percent
+        aggregation: ratio
+        numerator_field: overdue_cnt_4_3
+        denominator_field: expire_cnt_4_3
+        formula: overdue_cnt_4_3/expire_cnt_4_3
+        definition: 人头逾期率 = 第4期观察点3天逾期人数/到期人数（底表粒度为订单，实现为逾期件数/到期件数）。用户指定衍生指标，命名同dpd1_7cnt。
+        source: user_specified_derived
+      overdue_amt_4_7:
+        name: 逾期金额4_7
+        category: risk_overdue_amt
+        format: amount
+        aggregation: sum
+        numerator_field: overdue_amt_4_7
+        denominator_field: null
+        definition: 第4期观察点7天的逾期金额合计 = SUM(dpd4_7)，源字段 dws_risk_dpd_vintage_df.overdue_amt_4_7。
+        source: sql_metric_source
+        sql_expression: SUM(dpd4_7)
+      expire_amt_4_7:
+        name: 到期金额4_7
+        category: risk_expire_amt
+        format: amount
+        aggregation: sum
+        numerator_field: expire_amt_4_7
+        denominator_field: null
+        definition: 第4期观察点7天的到期本金合计 = SUM(expire_amt_4_7)，到期判定：overdue_amt_4_7非null，值为该单repay_principal。
+        source: sql_metric_source
+        sql_expression: SUM(expire_amt_4_7)
+      overdue_cnt_4_7:
+        name: 逾期件数4_7
+        category: risk_overdue_cnt
+        format: integer
+        aggregation: sum
+        numerator_field: overdue_cnt_4_7
+        denominator_field: null
+        definition: '第4期观察点7天逾期的订单数 = SUM(overdue_cnt_4_7)，overdue_cnt=1当overdue_amt_4_7>0。'
+        source: sql_metric_source
+        sql_expression: SUM(overdue_cnt_4_7)
+      expire_cnt_4_7:
+        name: 到期件数4_7
+        category: risk_expire_cnt
+        format: integer
+        aggregation: sum
+        numerator_field: expire_cnt_4_7
+        denominator_field: null
+        definition: 第4期观察点7天到期的订单数 = SUM(expire_cnt_4_7)，到期判定：overdue_amt_4_7非null。
+        source: sql_metric_source
+        sql_expression: SUM(expire_cnt_4_7)
+      dpd4_7:
+        name: 4_7金额逾期率
+        category: risk_rate_amt
+        format: percent
+        aggregation: ratio
+        numerator_field: overdue_amt_4_7
+        denominator_field: expire_amt_4_7
+        formula: overdue_amt_4_7/expire_amt_4_7
+        definition: 金额逾期率 = 第4期观察点7天逾期金额/到期本金。按pivot中dpd1_7/dpd2_7/dpd3_7同口径扩展。
+        source: sql_metric_source
+      dpd4_7cnt:
+        name: dpd4_7cnt人头逾期率
+        category: risk_rate_cnt
+        format: percent
+        aggregation: ratio
+        numerator_field: overdue_cnt_4_7
+        denominator_field: expire_cnt_4_7
+        formula: overdue_cnt_4_7/expire_cnt_4_7
+        definition: 人头逾期率 = 第4期观察点7天逾期人数/到期人数（底表粒度为订单，实现为逾期件数/到期件数）。用户指定衍生指标，命名同dpd1_7cnt。
+        source: user_specified_derived
+      overdue_amt_4_15:
+        name: 逾期金额4_15
+        category: risk_overdue_amt
+        format: amount
+        aggregation: sum
+        numerator_field: overdue_amt_4_15
+        denominator_field: null
+        definition: 第4期观察点15天的逾期金额合计 = SUM(dpd4_15)，源字段 dws_risk_dpd_vintage_df.overdue_amt_4_15。
+        source: sql_metric_source
+        sql_expression: SUM(dpd4_15)
+      expire_amt_4_15:
+        name: 到期金额4_15
+        category: risk_expire_amt
+        format: amount
+        aggregation: sum
+        numerator_field: expire_amt_4_15
+        denominator_field: null
+        definition: 第4期观察点15天的到期本金合计 = SUM(expire_amt_4_15)，到期判定：overdue_amt_4_15非null，值为该单repay_principal。
+        source: sql_metric_source
+        sql_expression: SUM(expire_amt_4_15)
+      overdue_cnt_4_15:
+        name: 逾期件数4_15
+        category: risk_overdue_cnt
+        format: integer
+        aggregation: sum
+        numerator_field: overdue_cnt_4_15
+        denominator_field: null
+        definition: '第4期观察点15天逾期的订单数 = SUM(overdue_cnt_4_15)，overdue_cnt=1当overdue_amt_4_15>0。'
+        source: sql_metric_source
+        sql_expression: SUM(overdue_cnt_4_15)
+      expire_cnt_4_15:
+        name: 到期件数4_15
+        category: risk_expire_cnt
+        format: integer
+        aggregation: sum
+        numerator_field: expire_cnt_4_15
+        denominator_field: null
+        definition: 第4期观察点15天到期的订单数 = SUM(expire_cnt_4_15)，到期判定：overdue_amt_4_15非null。
+        source: sql_metric_source
+        sql_expression: SUM(expire_cnt_4_15)
+      dpd4_15:
+        name: 4_15金额逾期率
+        category: risk_rate_amt
+        format: percent
+        aggregation: ratio
+        numerator_field: overdue_amt_4_15
+        denominator_field: expire_amt_4_15
+        formula: overdue_amt_4_15/expire_amt_4_15
+        definition: 金额逾期率 = 第4期观察点15天逾期金额/到期本金。按pivot中dpd1_7/dpd2_7/dpd3_7同口径扩展。
+        source: sql_metric_source
+      dpd4_15cnt:
+        name: dpd4_15cnt人头逾期率
+        category: risk_rate_cnt
+        format: percent
+        aggregation: ratio
+        numerator_field: overdue_cnt_4_15
+        denominator_field: expire_cnt_4_15
+        formula: overdue_cnt_4_15/expire_cnt_4_15
+        definition: 人头逾期率 = 第4期观察点15天逾期人数/到期人数（底表粒度为订单，实现为逾期件数/到期件数）。用户指定衍生指标，命名同dpd1_7cnt。
+        source: user_specified_derived
+      overdue_amt_5_1:
+        name: 逾期金额5_1
+        category: risk_overdue_amt
+        format: amount
+        aggregation: sum
+        numerator_field: overdue_amt_5_1
+        denominator_field: null
+        definition: 第5期观察点1天的逾期金额合计 = SUM(dpd5_1)，源字段 dws_risk_dpd_vintage_df.overdue_amt_5_1。
+        source: sql_metric_source
+        sql_expression: SUM(dpd5_1)
+      expire_amt_5_1:
+        name: 到期金额5_1
+        category: risk_expire_amt
+        format: amount
+        aggregation: sum
+        numerator_field: expire_amt_5_1
+        denominator_field: null
+        definition: 第5期观察点1天的到期本金合计 = SUM(expire_amt_5_1)，到期判定：overdue_amt_5_1非null，值为该单repay_principal。
+        source: sql_metric_source
+        sql_expression: SUM(expire_amt_5_1)
+      overdue_cnt_5_1:
+        name: 逾期件数5_1
+        category: risk_overdue_cnt
+        format: integer
+        aggregation: sum
+        numerator_field: overdue_cnt_5_1
+        denominator_field: null
+        definition: '第5期观察点1天逾期的订单数 = SUM(overdue_cnt_5_1)，overdue_cnt=1当overdue_amt_5_1>0。'
+        source: sql_metric_source
+        sql_expression: SUM(overdue_cnt_5_1)
+      expire_cnt_5_1:
+        name: 到期件数5_1
+        category: risk_expire_cnt
+        format: integer
+        aggregation: sum
+        numerator_field: expire_cnt_5_1
+        denominator_field: null
+        definition: 第5期观察点1天到期的订单数 = SUM(expire_cnt_5_1)，到期判定：overdue_amt_5_1非null。
+        source: sql_metric_source
+        sql_expression: SUM(expire_cnt_5_1)
+      dpd5_1:
+        name: 5_1金额逾期率
+        category: risk_rate_amt
+        format: percent
+        aggregation: ratio
+        numerator_field: overdue_amt_5_1
+        denominator_field: expire_amt_5_1
+        formula: overdue_amt_5_1/expire_amt_5_1
+        definition: 金额逾期率 = 第5期观察点1天逾期金额/到期本金。按pivot中dpd1_7/dpd2_7/dpd3_7同口径扩展。
+        source: sql_metric_source
+      dpd5_1cnt:
+        name: dpd5_1cnt人头逾期率
+        category: risk_rate_cnt
+        format: percent
+        aggregation: ratio
+        numerator_field: overdue_cnt_5_1
+        denominator_field: expire_cnt_5_1
+        formula: overdue_cnt_5_1/expire_cnt_5_1
+        definition: 人头逾期率 = 第5期观察点1天逾期人数/到期人数（底表粒度为订单，实现为逾期件数/到期件数）。用户指定衍生指标，命名同dpd1_7cnt。
+        source: user_specified_derived
+      overdue_amt_5_3:
+        name: 逾期金额5_3
+        category: risk_overdue_amt
+        format: amount
+        aggregation: sum
+        numerator_field: overdue_amt_5_3
+        denominator_field: null
+        definition: 第5期观察点3天的逾期金额合计 = SUM(dpd5_3)，源字段 dws_risk_dpd_vintage_df.overdue_amt_5_3。
+        source: sql_metric_source
+        sql_expression: SUM(dpd5_3)
+      expire_amt_5_3:
+        name: 到期金额5_3
+        category: risk_expire_amt
+        format: amount
+        aggregation: sum
+        numerator_field: expire_amt_5_3
+        denominator_field: null
+        definition: 第5期观察点3天的到期本金合计 = SUM(expire_amt_5_3)，到期判定：overdue_amt_5_3非null，值为该单repay_principal。
+        source: sql_metric_source
+        sql_expression: SUM(expire_amt_5_3)
+      overdue_cnt_5_3:
+        name: 逾期件数5_3
+        category: risk_overdue_cnt
+        format: integer
+        aggregation: sum
+        numerator_field: overdue_cnt_5_3
+        denominator_field: null
+        definition: '第5期观察点3天逾期的订单数 = SUM(overdue_cnt_5_3)，overdue_cnt=1当overdue_amt_5_3>0。'
+        source: sql_metric_source
+        sql_expression: SUM(overdue_cnt_5_3)
+      expire_cnt_5_3:
+        name: 到期件数5_3
+        category: risk_expire_cnt
+        format: integer
+        aggregation: sum
+        numerator_field: expire_cnt_5_3
+        denominator_field: null
+        definition: 第5期观察点3天到期的订单数 = SUM(expire_cnt_5_3)，到期判定：overdue_amt_5_3非null。
+        source: sql_metric_source
+        sql_expression: SUM(expire_cnt_5_3)
+      dpd5_3:
+        name: 5_3金额逾期率
+        category: risk_rate_amt
+        format: percent
+        aggregation: ratio
+        numerator_field: overdue_amt_5_3
+        denominator_field: expire_amt_5_3
+        formula: overdue_amt_5_3/expire_amt_5_3
+        definition: 金额逾期率 = 第5期观察点3天逾期金额/到期本金。按pivot中dpd1_7/dpd2_7/dpd3_7同口径扩展。
+        source: sql_metric_source
+      dpd5_3cnt:
+        name: dpd5_3cnt人头逾期率
+        category: risk_rate_cnt
+        format: percent
+        aggregation: ratio
+        numerator_field: overdue_cnt_5_3
+        denominator_field: expire_cnt_5_3
+        formula: overdue_cnt_5_3/expire_cnt_5_3
+        definition: 人头逾期率 = 第5期观察点3天逾期人数/到期人数（底表粒度为订单，实现为逾期件数/到期件数）。用户指定衍生指标，命名同dpd1_7cnt。
+        source: user_specified_derived
+      overdue_amt_5_7:
+        name: 逾期金额5_7
+        category: risk_overdue_amt
+        format: amount
+        aggregation: sum
+        numerator_field: overdue_amt_5_7
+        denominator_field: null
+        definition: 第5期观察点7天的逾期金额合计 = SUM(dpd5_7)，源字段 dws_risk_dpd_vintage_df.overdue_amt_5_7。
+        source: sql_metric_source
+        sql_expression: SUM(dpd5_7)
+      expire_amt_5_7:
+        name: 到期金额5_7
+        category: risk_expire_amt
+        format: amount
+        aggregation: sum
+        numerator_field: expire_amt_5_7
+        denominator_field: null
+        definition: 第5期观察点7天的到期本金合计 = SUM(expire_amt_5_7)，到期判定：overdue_amt_5_7非null，值为该单repay_principal。
+        source: sql_metric_source
+        sql_expression: SUM(expire_amt_5_7)
+      overdue_cnt_5_7:
+        name: 逾期件数5_7
+        category: risk_overdue_cnt
+        format: integer
+        aggregation: sum
+        numerator_field: overdue_cnt_5_7
+        denominator_field: null
+        definition: '第5期观察点7天逾期的订单数 = SUM(overdue_cnt_5_7)，overdue_cnt=1当overdue_amt_5_7>0。'
+        source: sql_metric_source
+        sql_expression: SUM(overdue_cnt_5_7)
+      expire_cnt_5_7:
+        name: 到期件数5_7
+        category: risk_expire_cnt
+        format: integer
+        aggregation: sum
+        numerator_field: expire_cnt_5_7
+        denominator_field: null
+        definition: 第5期观察点7天到期的订单数 = SUM(expire_cnt_5_7)，到期判定：overdue_amt_5_7非null。
+        source: sql_metric_source
+        sql_expression: SUM(expire_cnt_5_7)
+      dpd5_7:
+        name: 5_7金额逾期率
+        category: risk_rate_amt
+        format: percent
+        aggregation: ratio
+        numerator_field: overdue_amt_5_7
+        denominator_field: expire_amt_5_7
+        formula: overdue_amt_5_7/expire_amt_5_7
+        definition: 金额逾期率 = 第5期观察点7天逾期金额/到期本金。按pivot中dpd1_7/dpd2_7/dpd3_7同口径扩展。
+        source: sql_metric_source
+      dpd5_7cnt:
+        name: dpd5_7cnt人头逾期率
+        category: risk_rate_cnt
+        format: percent
+        aggregation: ratio
+        numerator_field: overdue_cnt_5_7
+        denominator_field: expire_cnt_5_7
+        formula: overdue_cnt_5_7/expire_cnt_5_7
+        definition: 人头逾期率 = 第5期观察点7天逾期人数/到期人数（底表粒度为订单，实现为逾期件数/到期件数）。用户指定衍生指标，命名同dpd1_7cnt。
+        source: user_specified_derived
+      overdue_amt_5_15:
+        name: 逾期金额5_15
+        category: risk_overdue_amt
+        format: amount
+        aggregation: sum
+        numerator_field: overdue_amt_5_15
+        denominator_field: null
+        definition: 第5期观察点15天的逾期金额合计 = SUM(dpd5_15)，源字段 dws_risk_dpd_vintage_df.overdue_amt_5_15。
+        source: sql_metric_source
+        sql_expression: SUM(dpd5_15)
+      expire_amt_5_15:
+        name: 到期金额5_15
+        category: risk_expire_amt
+        format: amount
+        aggregation: sum
+        numerator_field: expire_amt_5_15
+        denominator_field: null
+        definition: 第5期观察点15天的到期本金合计 = SUM(expire_amt_5_15)，到期判定：overdue_amt_5_15非null，值为该单repay_principal。
+        source: sql_metric_source
+        sql_expression: SUM(expire_amt_5_15)
+      overdue_cnt_5_15:
+        name: 逾期件数5_15
+        category: risk_overdue_cnt
+        format: integer
+        aggregation: sum
+        numerator_field: overdue_cnt_5_15
+        denominator_field: null
+        definition: '第5期观察点15天逾期的订单数 = SUM(overdue_cnt_5_15)，overdue_cnt=1当overdue_amt_5_15>0。'
+        source: sql_metric_source
+        sql_expression: SUM(overdue_cnt_5_15)
+      expire_cnt_5_15:
+        name: 到期件数5_15
+        category: risk_expire_cnt
+        format: integer
+        aggregation: sum
+        numerator_field: expire_cnt_5_15
+        denominator_field: null
+        definition: 第5期观察点15天到期的订单数 = SUM(expire_cnt_5_15)，到期判定：overdue_amt_5_15非null。
+        source: sql_metric_source
+        sql_expression: SUM(expire_cnt_5_15)
+      dpd5_15:
+        name: 5_15金额逾期率
+        category: risk_rate_amt
+        format: percent
+        aggregation: ratio
+        numerator_field: overdue_amt_5_15
+        denominator_field: expire_amt_5_15
+        formula: overdue_amt_5_15/expire_amt_5_15
+        definition: 金额逾期率 = 第5期观察点15天逾期金额/到期本金。按pivot中dpd1_7/dpd2_7/dpd3_7同口径扩展。
+        source: sql_metric_source
+      dpd5_15cnt:
+        name: dpd5_15cnt人头逾期率
+        category: risk_rate_cnt
+        format: percent
+        aggregation: ratio
+        numerator_field: overdue_cnt_5_15
+        denominator_field: expire_cnt_5_15
+        formula: overdue_cnt_5_15/expire_cnt_5_15
+        definition: 人头逾期率 = 第5期观察点15天逾期人数/到期人数（底表粒度为订单，实现为逾期件数/到期件数）。用户指定衍生指标，命名同dpd1_7cnt。
+        source: user_specified_derived
+      overdue_amt_6_1:
+        name: 逾期金额6_1
+        category: risk_overdue_amt
+        format: amount
+        aggregation: sum
+        numerator_field: overdue_amt_6_1
+        denominator_field: null
+        definition: 第6期观察点1天的逾期金额合计 = SUM(dpd6_1)，源字段 dws_risk_dpd_vintage_df.overdue_amt_6_1。
+        source: sql_metric_source
+        sql_expression: SUM(dpd6_1)
+      expire_amt_6_1:
+        name: 到期金额6_1
+        category: risk_expire_amt
+        format: amount
+        aggregation: sum
+        numerator_field: expire_amt_6_1
+        denominator_field: null
+        definition: 第6期观察点1天的到期本金合计 = SUM(expire_amt_6_1)，到期判定：overdue_amt_6_1非null，值为该单repay_principal。
+        source: sql_metric_source
+        sql_expression: SUM(expire_amt_6_1)
+      overdue_cnt_6_1:
+        name: 逾期件数6_1
+        category: risk_overdue_cnt
+        format: integer
+        aggregation: sum
+        numerator_field: overdue_cnt_6_1
+        denominator_field: null
+        definition: '第6期观察点1天逾期的订单数 = SUM(overdue_cnt_6_1)，overdue_cnt=1当overdue_amt_6_1>0。'
+        source: sql_metric_source
+        sql_expression: SUM(overdue_cnt_6_1)
+      expire_cnt_6_1:
+        name: 到期件数6_1
+        category: risk_expire_cnt
+        format: integer
+        aggregation: sum
+        numerator_field: expire_cnt_6_1
+        denominator_field: null
+        definition: 第6期观察点1天到期的订单数 = SUM(expire_cnt_6_1)，到期判定：overdue_amt_6_1非null。
+        source: sql_metric_source
+        sql_expression: SUM(expire_cnt_6_1)
+      dpd6_1:
+        name: 6_1金额逾期率
+        category: risk_rate_amt
+        format: percent
+        aggregation: ratio
+        numerator_field: overdue_amt_6_1
+        denominator_field: expire_amt_6_1
+        formula: overdue_amt_6_1/expire_amt_6_1
+        definition: 金额逾期率 = 第6期观察点1天逾期金额/到期本金。按pivot中dpd1_7/dpd2_7/dpd3_7同口径扩展。
+        source: sql_metric_source
+      dpd6_1cnt:
+        name: dpd6_1cnt人头逾期率
+        category: risk_rate_cnt
+        format: percent
+        aggregation: ratio
+        numerator_field: overdue_cnt_6_1
+        denominator_field: expire_cnt_6_1
+        formula: overdue_cnt_6_1/expire_cnt_6_1
+        definition: 人头逾期率 = 第6期观察点1天逾期人数/到期人数（底表粒度为订单，实现为逾期件数/到期件数）。用户指定衍生指标，命名同dpd1_7cnt。
+        source: user_specified_derived
+      overdue_amt_6_3:
+        name: 逾期金额6_3
+        category: risk_overdue_amt
+        format: amount
+        aggregation: sum
+        numerator_field: overdue_amt_6_3
+        denominator_field: null
+        definition: 第6期观察点3天的逾期金额合计 = SUM(dpd6_3)，源字段 dws_risk_dpd_vintage_df.overdue_amt_6_3。
+        source: sql_metric_source
+        sql_expression: SUM(dpd6_3)
+      expire_amt_6_3:
+        name: 到期金额6_3
+        category: risk_expire_amt
+        format: amount
+        aggregation: sum
+        numerator_field: expire_amt_6_3
+        denominator_field: null
+        definition: 第6期观察点3天的到期本金合计 = SUM(expire_amt_6_3)，到期判定：overdue_amt_6_3非null，值为该单repay_principal。
+        source: sql_metric_source
+        sql_expression: SUM(expire_amt_6_3)
+      overdue_cnt_6_3:
+        name: 逾期件数6_3
+        category: risk_overdue_cnt
+        format: integer
+        aggregation: sum
+        numerator_field: overdue_cnt_6_3
+        denominator_field: null
+        definition: '第6期观察点3天逾期的订单数 = SUM(overdue_cnt_6_3)，overdue_cnt=1当overdue_amt_6_3>0。'
+        source: sql_metric_source
+        sql_expression: SUM(overdue_cnt_6_3)
+      expire_cnt_6_3:
+        name: 到期件数6_3
+        category: risk_expire_cnt
+        format: integer
+        aggregation: sum
+        numerator_field: expire_cnt_6_3
+        denominator_field: null
+        definition: 第6期观察点3天到期的订单数 = SUM(expire_cnt_6_3)，到期判定：overdue_amt_6_3非null。
+        source: sql_metric_source
+        sql_expression: SUM(expire_cnt_6_3)
+      dpd6_3:
+        name: 6_3金额逾期率
+        category: risk_rate_amt
+        format: percent
+        aggregation: ratio
+        numerator_field: overdue_amt_6_3
+        denominator_field: expire_amt_6_3
+        formula: overdue_amt_6_3/expire_amt_6_3
+        definition: 金额逾期率 = 第6期观察点3天逾期金额/到期本金。按pivot中dpd1_7/dpd2_7/dpd3_7同口径扩展。
+        source: sql_metric_source
+      dpd6_3cnt:
+        name: dpd6_3cnt人头逾期率
+        category: risk_rate_cnt
+        format: percent
+        aggregation: ratio
+        numerator_field: overdue_cnt_6_3
+        denominator_field: expire_cnt_6_3
+        formula: overdue_cnt_6_3/expire_cnt_6_3
+        definition: 人头逾期率 = 第6期观察点3天逾期人数/到期人数（底表粒度为订单，实现为逾期件数/到期件数）。用户指定衍生指标，命名同dpd1_7cnt。
+        source: user_specified_derived
+      overdue_amt_6_7:
+        name: 逾期金额6_7
+        category: risk_overdue_amt
+        format: amount
+        aggregation: sum
+        numerator_field: overdue_amt_6_7
+        denominator_field: null
+        definition: 第6期观察点7天的逾期金额合计 = SUM(dpd6_7)，源字段 dws_risk_dpd_vintage_df.overdue_amt_6_7。
+        source: sql_metric_source
+        sql_expression: SUM(dpd6_7)
+      expire_amt_6_7:
+        name: 到期金额6_7
+        category: risk_expire_amt
+        format: amount
+        aggregation: sum
+        numerator_field: expire_amt_6_7
+        denominator_field: null
+        definition: 第6期观察点7天的到期本金合计 = SUM(expire_amt_6_7)，到期判定：overdue_amt_6_7非null，值为该单repay_principal。
+        source: sql_metric_source
+        sql_expression: SUM(expire_amt_6_7)
+      overdue_cnt_6_7:
+        name: 逾期件数6_7
+        category: risk_overdue_cnt
+        format: integer
+        aggregation: sum
+        numerator_field: overdue_cnt_6_7
+        denominator_field: null
+        definition: '第6期观察点7天逾期的订单数 = SUM(overdue_cnt_6_7)，overdue_cnt=1当overdue_amt_6_7>0。'
+        source: sql_metric_source
+        sql_expression: SUM(overdue_cnt_6_7)
+      expire_cnt_6_7:
+        name: 到期件数6_7
+        category: risk_expire_cnt
+        format: integer
+        aggregation: sum
+        numerator_field: expire_cnt_6_7
+        denominator_field: null
+        definition: 第6期观察点7天到期的订单数 = SUM(expire_cnt_6_7)，到期判定：overdue_amt_6_7非null。
+        source: sql_metric_source
+        sql_expression: SUM(expire_cnt_6_7)
+      dpd6_7:
+        name: 6_7金额逾期率
+        category: risk_rate_amt
+        format: percent
+        aggregation: ratio
+        numerator_field: overdue_amt_6_7
+        denominator_field: expire_amt_6_7
+        formula: overdue_amt_6_7/expire_amt_6_7
+        definition: 金额逾期率 = 第6期观察点7天逾期金额/到期本金。按pivot中dpd1_7/dpd2_7/dpd3_7同口径扩展。
+        source: sql_metric_source
+      dpd6_7cnt:
+        name: dpd6_7cnt人头逾期率
+        category: risk_rate_cnt
+        format: percent
+        aggregation: ratio
+        numerator_field: overdue_cnt_6_7
+        denominator_field: expire_cnt_6_7
+        formula: overdue_cnt_6_7/expire_cnt_6_7
+        definition: 人头逾期率 = 第6期观察点7天逾期人数/到期人数（底表粒度为订单，实现为逾期件数/到期件数）。用户指定衍生指标，命名同dpd1_7cnt。
+        source: user_specified_derived
+      overdue_amt_6_15:
+        name: 逾期金额6_15
+        category: risk_overdue_amt
+        format: amount
+        aggregation: sum
+        numerator_field: overdue_amt_6_15
+        denominator_field: null
+        definition: 第6期观察点15天的逾期金额合计 = SUM(dpd6_15)，源字段 dws_risk_dpd_vintage_df.overdue_amt_6_15。
+        source: sql_metric_source
+        sql_expression: SUM(dpd6_15)
+      expire_amt_6_15:
+        name: 到期金额6_15
+        category: risk_expire_amt
+        format: amount
+        aggregation: sum
+        numerator_field: expire_amt_6_15
+        denominator_field: null
+        definition: 第6期观察点15天的到期本金合计 = SUM(expire_amt_6_15)，到期判定：overdue_amt_6_15非null，值为该单repay_principal。
+        source: sql_metric_source
+        sql_expression: SUM(expire_amt_6_15)
+      overdue_cnt_6_15:
+        name: 逾期件数6_15
+        category: risk_overdue_cnt
+        format: integer
+        aggregation: sum
+        numerator_field: overdue_cnt_6_15
+        denominator_field: null
+        definition: '第6期观察点15天逾期的订单数 = SUM(overdue_cnt_6_15)，overdue_cnt=1当overdue_amt_6_15>0。'
+        source: sql_metric_source
+        sql_expression: SUM(overdue_cnt_6_15)
+      expire_cnt_6_15:
+        name: 到期件数6_15
+        category: risk_expire_cnt
+        format: integer
+        aggregation: sum
+        numerator_field: expire_cnt_6_15
+        denominator_field: null
+        definition: 第6期观察点15天到期的订单数 = SUM(expire_cnt_6_15)，到期判定：overdue_amt_6_15非null。
+        source: sql_metric_source
+        sql_expression: SUM(expire_cnt_6_15)
+      dpd6_15:
+        name: 6_15金额逾期率
+        category: risk_rate_amt
+        format: percent
+        aggregation: ratio
+        numerator_field: overdue_amt_6_15
+        denominator_field: expire_amt_6_15
+        formula: overdue_amt_6_15/expire_amt_6_15
+        definition: 金额逾期率 = 第6期观察点15天逾期金额/到期本金。按pivot中dpd1_7/dpd2_7/dpd3_7同口径扩展。
+        source: sql_metric_source
+      dpd6_15cnt:
+        name: dpd6_15cnt人头逾期率
+        category: risk_rate_cnt
+        format: percent
+        aggregation: ratio
+        numerator_field: overdue_cnt_6_15
+        denominator_field: expire_cnt_6_15
+        formula: overdue_cnt_6_15/expire_cnt_6_15
+        definition: 人头逾期率 = 第6期观察点15天逾期人数/到期人数（底表粒度为订单，实现为逾期件数/到期件数）。用户指定衍生指标，命名同dpd1_7cnt。
+        source: user_specified_derived
+      overdue_cycle2_ever3:
+        name: 复借cycle2_ever3逾期人数
+        category: risk_reloan
+        format: integer
+        aggregation: sum
+        numerator_field: overdue_cycle2_ever3
+        denominator_field: null
+        definition: '新客成交单在mob2后复借老客单中 target_user_cycle2_ever3>=0 的件数（jojo_sd_targets目标）。'
+        source: sql_metric_source
+        sql_expression: sum(overdue_cycle2_ever3)
+      expire_cycle2_ever3:
+        name: 复借cycle2_ever3到期人数
+        category: risk_reloan
+        format: integer
+        aggregation: sum
+        numerator_field: expire_cycle2_ever3
+        denominator_field: null
+        definition: '新客成交单在mob2后复借老客单中 target_user_cycle2_ever3>=-1 的件数（jojo_sd_targets目标）。'
+        source: sql_metric_source
+        sql_expression: sum(expire_cycle2_ever3)
+      overdue_cycle2_ever7:
+        name: 复借cycle2_ever7逾期人数
+        category: risk_reloan
+        format: integer
+        aggregation: sum
+        numerator_field: overdue_cycle2_ever7
+        denominator_field: null
+        definition: '新客成交单在mob2后复借老客单中 target_user_cycle2_ever7>=0 的件数（jojo_sd_targets目标）。'
+        source: sql_metric_source
+        sql_expression: sum(overdue_cycle2_ever7)
+      expire_cycle2_ever7:
+        name: 复借cycle2_ever7到期人数
+        category: risk_reloan
+        format: integer
+        aggregation: sum
+        numerator_field: expire_cycle2_ever7
+        denominator_field: null
+        definition: '新客成交单在mob2后复借老客单中 target_user_cycle2_ever7>=-1 的件数（jojo_sd_targets目标）。'
+        source: sql_metric_source
+        sql_expression: sum(expire_cycle2_ever7)
+      overdue_cycle4_ever3:
+        name: 复借cycle4_ever3逾期人数
+        category: risk_reloan
+        format: integer
+        aggregation: sum
+        numerator_field: overdue_cycle4_ever3
+        denominator_field: null
+        definition: '新客成交单在mob4后复借老客单中 target_user_cycle4_ever3>=0 的件数（jojo_sd_targets目标）。'
+        source: sql_metric_source
+        sql_expression: sum(overdue_cycle4_ever3)
+      expire_cycle4_ever3:
+        name: 复借cycle4_ever3到期人数
+        category: risk_reloan
+        format: integer
+        aggregation: sum
+        numerator_field: expire_cycle4_ever3
+        denominator_field: null
+        definition: '新客成交单在mob4后复借老客单中 target_user_cycle4_ever3>=-1 的件数（jojo_sd_targets目标）。'
+        source: sql_metric_source
+        sql_expression: sum(expire_cycle4_ever3)
+      overdue_cycle4_ever7:
+        name: 复借cycle4_ever7逾期人数
+        category: risk_reloan
+        format: integer
+        aggregation: sum
+        numerator_field: overdue_cycle4_ever7
+        denominator_field: null
+        definition: '新客成交单在mob4后复借老客单中 target_user_cycle4_ever7>=0 的件数（jojo_sd_targets目标）。'
+        source: sql_metric_source
+        sql_expression: sum(overdue_cycle4_ever7)
+      expire_cycle4_ever7:
+        name: 复借cycle4_ever7到期人数
+        category: risk_reloan
+        format: integer
+        aggregation: sum
+        numerator_field: expire_cycle4_ever7
+        denominator_field: null
+        definition: '新客成交单在mob4后复借老客单中 target_user_cycle4_ever7>=-1 的件数（jojo_sd_targets目标）。'
+        source: sql_metric_source
+        sql_expression: sum(expire_cycle4_ever7)
+      deal_age:
+        name: 成交-年龄
+        category: deal_profile
+        format: decimal
+        aggregation: ratio
+        numerator_field: deal_age_sum
+        denominator_field: deal_age_cnt
+        formula: deal_age_sum/deal_age_cnt
+        definition: '成交人年龄均值 = sum(is_payout且age_raw>=0的age_raw)/对应件数。pivot列：求和项:成交-年龄。'
+        source: excel_pivot_formula_confirmed
+      deal_education:
+        name: 成交-学历
+        category: deal_profile
+        format: decimal
+        aggregation: ratio
+        numerator_field: deal_education_sum
+        denominator_field: deal_education_cnt
+        formula: deal_education_sum/deal_education_cnt
+        definition: '成交人学历编码均值。pivot列：求和项:成交-学历。'
+        source: excel_pivot_formula_confirmed
+      deal_monthly_income:
+        name: 成交-月收入
+        category: deal_profile
+        format: decimal
+        aggregation: ratio
+        numerator_field: deal_monthly_income_sum
+        denominator_field: deal_monthly_income_cnt
+        formula: deal_monthly_income_sum/deal_monthly_income_cnt
+        definition: '成交人月收入均值。pivot列：求和项:成交-月收入。'
+        source: excel_pivot_formula_confirmed
+      deal_lending_app:
+        name: 成交-借贷app多头个数
+        category: deal_profile
+        format: decimal
+        aggregation: ratio
+        numerator_field: deal_lending_app_cnt
+        denominator_field: payout_cnt
+        formula: deal_lending_app_cnt/payout_cnt
+        definition: '成交人借贷类app安装个数均值 = deal_lending_app_cnt/成交件数。pivot列：求和项:成交-借贷app多头个数。'
+        source: excel_pivot_formula_confirmed
+      deal_lending_app_t30:
+        name: 成交-借贷app多头个数T30
+        category: deal_profile
+        format: decimal
+        aggregation: ratio
+        numerator_field: deal_lending_app_t30_cnt
+        denominator_field: payout_cnt
+        formula: deal_lending_app_t30_cnt/payout_cnt
+        definition: 成交人近30天借贷类app安装个数均值。
+        source: excel_pivot_formula_confirmed
+      deal_advance_multib:
+        name: 成交-adv黑盘多头
+        category: deal_profile
+        format: decimal
+        aggregation: ratio
+        numerator_field: deal_advance_multib_sum
+        denominator_field: deal_advance_multib_cnt
+        formula: deal_advance_multib_sum/deal_advance_multib_cnt
+        definition: '成交人Advance黑盘多头均值。pivot列：求和项:成交-adv黑盘多头。'
+        source: excel_pivot_formula_confirmed
+      deal_advance_multia:
+        name: 成交-adv白盘多头
+        category: deal_profile
+        format: decimal
+        aggregation: ratio
+        numerator_field: deal_advance_multia_sum
+        denominator_field: deal_advance_multia_cnt
+        formula: deal_advance_multia_sum/deal_advance_multia_cnt
+        definition: '成交人Advance白盘多头均值。pivot列：求和项:成交-adv白盘多头。'
+        source: excel_pivot_formula_confirmed
+      deal_mobilewalla_multi:
+        name: 成交-mw多头
+        category: deal_profile
+        format: decimal
+        aggregation: ratio
+        numerator_field: deal_mobilewalla_multi_sum
+        denominator_field: deal_mobilewalla_multi_cnt
+        formula: deal_mobilewalla_multi_sum/deal_mobilewalla_multi_cnt
+        definition: '成交人MobileWalla多头均值。pivot列：求和项:成交-mw多头。'
+        source: excel_pivot_formula_confirmed
+      deal_cibi_total_balance:
+        name: 成交-cibi总余额
+        category: deal_profile
+        format: decimal
+        aggregation: ratio
+        numerator_field: deal_cibi_total_balance_sum
+        denominator_field: deal_cibi_total_balance_cnt
+        formula: deal_cibi_total_balance_sum/deal_cibi_total_balance_cnt
+        definition: '成交人CIBI总余额均值。pivot列：求和项:成交-cibi总余额。'
+        source: excel_pivot_formula_confirmed
+      deal_cibi_total_available:
+        name: 成交-cibi可用余额
+        category: deal_profile
+        format: decimal
+        aggregation: ratio
+        numerator_field: deal_cibi_total_available_sum
+        denominator_field: deal_cibi_total_available_cnt
+        formula: deal_cibi_total_available_sum/deal_cibi_total_available_cnt
+        definition: '成交人CIBI可用余额均值。pivot列：求和项:成交-cibi可用余额。'
+        source: excel_pivot_formula_confirmed
+      deal_cibi_total_number:
+        name: 成交-cibi总账户数
+        category: deal_profile
+        format: decimal
+        aggregation: ratio
+        numerator_field: deal_cibi_total_number_sum
+        denominator_field: deal_cibi_total_number_cnt
+        formula: deal_cibi_total_number_sum/deal_cibi_total_number_cnt
+        definition: '成交人CIBI总账户数均值。pivot列：求和项:成交-cibi总账户数。'
+        source: excel_pivot_formula_confirmed
+      deal_age_sum:
+        name: 成交-年龄分子
+        category: deal_profile_source
+        format: integer
+        aggregation: sum
+        numerator_field: deal_age_sum
+        denominator_field: null
+        definition: 'SQL output field: deal_age_sum（成交人年龄均值的分子）。'
+        source: sql_metric_source
+        sql_expression: SUM(deal_age_sum)
+      deal_age_cnt:
+        name: 成交-年龄有效件数
+        category: deal_profile_source
+        format: integer
+        aggregation: sum
+        numerator_field: deal_age_cnt
+        denominator_field: null
+        definition: 'SQL output field: deal_age_cnt（raw值有效>=0的成交件数）。'
+        source: sql_metric_source
+        sql_expression: SUM(deal_age_cnt)
+      deal_education_sum:
+        name: 成交-学历分子
+        category: deal_profile_source
+        format: integer
+        aggregation: sum
+        numerator_field: deal_education_sum
+        denominator_field: null
+        definition: 'SQL output field: deal_education_sum（成交人学历编码均值。pivot列：求和项:成交-学历。的分子）。'
+        source: sql_metric_source
+        sql_expression: SUM(deal_education_sum)
+      deal_education_cnt:
+        name: 成交-学历有效件数
+        category: deal_profile_source
+        format: integer
+        aggregation: sum
+        numerator_field: deal_education_cnt
+        denominator_field: null
+        definition: 'SQL output field: deal_education_cnt（raw值有效>=0的成交件数）。'
+        source: sql_metric_source
+        sql_expression: SUM(deal_education_cnt)
+      deal_monthly_income_sum:
+        name: 成交-月收入分子
+        category: deal_profile_source
+        format: amount
+        aggregation: sum
+        numerator_field: deal_monthly_income_sum
+        denominator_field: null
+        definition: 'SQL output field: deal_monthly_income_sum（成交人月收入均值。pivot列：求和项:成交-月收入。的分子）。'
+        source: sql_metric_source
+        sql_expression: SUM(deal_monthly_income_sum)
+      deal_monthly_income_cnt:
+        name: 成交-月收入有效件数
+        category: deal_profile_source
+        format: integer
+        aggregation: sum
+        numerator_field: deal_monthly_income_cnt
+        denominator_field: null
+        definition: 'SQL output field: deal_monthly_income_cnt（raw值有效>=0的成交件数）。'
+        source: sql_metric_source
+        sql_expression: SUM(deal_monthly_income_cnt)
+      deal_lending_app_cnt:
+        name: 成交-借贷app多头个数分子
+        category: deal_profile_source
+        format: integer
+        aggregation: sum
+        numerator_field: deal_lending_app_cnt
+        denominator_field: null
+        definition: 'SQL output field: deal_lending_app_cnt（成交人借贷类app安装个数均值的分子）。'
+        source: sql_metric_source
+        sql_expression: SUM(deal_lending_app_cnt)
+      deal_lending_app_t30_cnt:
+        name: 成交-借贷app多头个数T30分子
+        category: deal_profile_source
+        format: integer
+        aggregation: sum
+        numerator_field: deal_lending_app_t30_cnt
+        denominator_field: null
+        definition: 'SQL output field: deal_lending_app_t30_cnt（成交人近30天借贷类app安装个数均值。的分子）。'
+        source: sql_metric_source
+        sql_expression: SUM(deal_lending_app_t30_cnt)
+      deal_advance_multib_sum:
+        name: 成交-adv黑盘多头分子
+        category: deal_profile_source
+        format: integer
+        aggregation: sum
+        numerator_field: deal_advance_multib_sum
+        denominator_field: null
+        definition: 'SQL output field: deal_advance_multib_sum（成交人Advance黑盘多头均值。pivot列：求和项:成交-adv黑盘多头。的分子）。'
+        source: sql_metric_source
+        sql_expression: SUM(deal_advance_multib_sum)
+      deal_advance_multib_cnt:
+        name: 成交-adv黑盘多头有效件数
+        category: deal_profile_source
+        format: integer
+        aggregation: sum
+        numerator_field: deal_advance_multib_cnt
+        denominator_field: null
+        definition: 'SQL output field: deal_advance_multib_cnt（raw值有效>=0的成交件数）。'
+        source: sql_metric_source
+        sql_expression: SUM(deal_advance_multib_cnt)
+      deal_advance_multia_sum:
+        name: 成交-adv白盘多头分子
+        category: deal_profile_source
+        format: integer
+        aggregation: sum
+        numerator_field: deal_advance_multia_sum
+        denominator_field: null
+        definition: 'SQL output field: deal_advance_multia_sum（成交人Advance白盘多头均值。pivot列：求和项:成交-adv白盘多头。的分子）。'
+        source: sql_metric_source
+        sql_expression: SUM(deal_advance_multia_sum)
+      deal_advance_multia_cnt:
+        name: 成交-adv白盘多头有效件数
+        category: deal_profile_source
+        format: integer
+        aggregation: sum
+        numerator_field: deal_advance_multia_cnt
+        denominator_field: null
+        definition: 'SQL output field: deal_advance_multia_cnt（raw值有效>=0的成交件数）。'
+        source: sql_metric_source
+        sql_expression: SUM(deal_advance_multia_cnt)
+      deal_mobilewalla_multi_sum:
+        name: 成交-mw多头分子
+        category: deal_profile_source
+        format: integer
+        aggregation: sum
+        numerator_field: deal_mobilewalla_multi_sum
+        denominator_field: null
+        definition: 'SQL output field: deal_mobilewalla_multi_sum（成交人MobileWalla多头均值。pivot列：求和项:成交-mw多头。的分子）。'
+        source: sql_metric_source
+        sql_expression: SUM(deal_mobilewalla_multi_sum)
+      deal_mobilewalla_multi_cnt:
+        name: 成交-mw多头有效件数
+        category: deal_profile_source
+        format: integer
+        aggregation: sum
+        numerator_field: deal_mobilewalla_multi_cnt
+        denominator_field: null
+        definition: 'SQL output field: deal_mobilewalla_multi_cnt（raw值有效>=0的成交件数）。'
+        source: sql_metric_source
+        sql_expression: SUM(deal_mobilewalla_multi_cnt)
+      deal_cibi_total_balance_sum:
+        name: 成交-cibi总余额分子
+        category: deal_profile_source
+        format: amount
+        aggregation: sum
+        numerator_field: deal_cibi_total_balance_sum
+        denominator_field: null
+        definition: 'SQL output field: deal_cibi_total_balance_sum（成交人CIBI总余额均值。pivot列：求和项:成交-cibi总余额。的分子）。'
+        source: sql_metric_source
+        sql_expression: SUM(deal_cibi_total_balance_sum)
+      deal_cibi_total_balance_cnt:
+        name: 成交-cibi总余额有效件数
+        category: deal_profile_source
+        format: integer
+        aggregation: sum
+        numerator_field: deal_cibi_total_balance_cnt
+        denominator_field: null
+        definition: 'SQL output field: deal_cibi_total_balance_cnt（raw值有效>=0的成交件数）。'
+        source: sql_metric_source
+        sql_expression: SUM(deal_cibi_total_balance_cnt)
+      deal_cibi_total_available_sum:
+        name: 成交-cibi可用余额分子
+        category: deal_profile_source
+        format: integer
+        aggregation: sum
+        numerator_field: deal_cibi_total_available_sum
+        denominator_field: null
+        definition: 'SQL output field: deal_cibi_total_available_sum（成交人CIBI可用余额均值。pivot列：求和项:成交-cibi可用余额。的分子）。'
+        source: sql_metric_source
+        sql_expression: SUM(deal_cibi_total_available_sum)
+      deal_cibi_total_available_cnt:
+        name: 成交-cibi可用余额有效件数
+        category: deal_profile_source
+        format: integer
+        aggregation: sum
+        numerator_field: deal_cibi_total_available_cnt
+        denominator_field: null
+        definition: 'SQL output field: deal_cibi_total_available_cnt（raw值有效>=0的成交件数）。'
+        source: sql_metric_source
+        sql_expression: SUM(deal_cibi_total_available_cnt)
+      deal_cibi_total_number_sum:
+        name: 成交-cibi总账户数分子
+        category: deal_profile_source
+        format: integer
+        aggregation: sum
+        numerator_field: deal_cibi_total_number_sum
+        denominator_field: null
+        definition: 'SQL output field: deal_cibi_total_number_sum（成交人CIBI总账户数均值。pivot列：求和项:成交-cibi总账户数。的分子）。'
+        source: sql_metric_source
+        sql_expression: SUM(deal_cibi_total_number_sum)
+      deal_cibi_total_number_cnt:
+        name: 成交-cibi总账户数有效件数
+        category: deal_profile_source
+        format: integer
+        aggregation: sum
+        numerator_field: deal_cibi_total_number_cnt
+        denominator_field: null
+        definition: 'SQL output field: deal_cibi_total_number_cnt（raw值有效>=0的成交件数）。'
+        source: sql_metric_source
+        sql_expression: SUM(deal_cibi_total_number_cnt)
+      mob0_principal:
+        name: 复借mob0本金
+        category: reloan
+        format: amount
+        aggregation: sum
+        numerator_field: mob0_principal
+        denominator_field: null
+        definition: 新客成交后第0个mob的老客复借放款本金合计（ph_risk_base_reloan_apply）。
+        source: sql_metric_source
+        sql_expression: sum(mob0_principal)
+      mob0_cnt:
+        name: 复借mob0件数
+        category: reloan
+        format: integer
+        aggregation: sum
+        numerator_field: mob0_cnt
+        denominator_field: null
+        definition: 新客成交后第0个mob的老客复借件数。
+        source: sql_metric_source
+        sql_expression: sum(mob0_cnt)
+      mob0_principal_irr:
+        name: '复借mob0本金*IRR'
+        category: reloan
+        format: amount
+        aggregation: sum
+        numerator_field: mob0_principal_irr
+        denominator_field: null
+        definition: '第0个mob复借本金*价格，IRR分子。'
+        source: sql_metric_source
+        sql_expression: sum(mob0_principal_irr)
+      mob0_repay_interest:
+        name: 复借mob0应还利息
+        category: reloan
+        format: amount
+        aggregation: sum
+        numerator_field: mob0_repay_interest
+        denominator_field: null
+        definition: 第0个mob复借应还利息。
+        source: sql_metric_source
+        sql_expression: sum(mob0_repay_interest)
+      mob0_principal_duration:
+        name: '复借mob0本金*久期'
+        category: reloan
+        format: amount
+        aggregation: sum
+        numerator_field: mob0_principal_duration
+        denominator_field: null
+        definition: '第0个mob复借本金*久期。'
+        source: sql_metric_source
+        sql_expression: sum(mob0_principal_duration)
+      mob1_principal:
+        name: 复借mob1本金
+        category: reloan
+        format: amount
+        aggregation: sum
+        numerator_field: mob1_principal
+        denominator_field: null
+        definition: 新客成交后第1个mob的老客复借放款本金合计（ph_risk_base_reloan_apply）。
+        source: sql_metric_source
+        sql_expression: sum(mob1_principal)
+      mob1_cnt:
+        name: 复借mob1件数
+        category: reloan
+        format: integer
+        aggregation: sum
+        numerator_field: mob1_cnt
+        denominator_field: null
+        definition: 新客成交后第1个mob的老客复借件数。
+        source: sql_metric_source
+        sql_expression: sum(mob1_cnt)
+      mob1_principal_irr:
+        name: '复借mob1本金*IRR'
+        category: reloan
+        format: amount
+        aggregation: sum
+        numerator_field: mob1_principal_irr
+        denominator_field: null
+        definition: '第1个mob复借本金*价格，IRR分子。'
+        source: sql_metric_source
+        sql_expression: sum(mob1_principal_irr)
+      mob1_repay_interest:
+        name: 复借mob1应还利息
+        category: reloan
+        format: amount
+        aggregation: sum
+        numerator_field: mob1_repay_interest
+        denominator_field: null
+        definition: 第1个mob复借应还利息。
+        source: sql_metric_source
+        sql_expression: sum(mob1_repay_interest)
+      mob1_principal_duration:
+        name: '复借mob1本金*久期'
+        category: reloan
+        format: amount
+        aggregation: sum
+        numerator_field: mob1_principal_duration
+        denominator_field: null
+        definition: '第1个mob复借本金*久期。'
+        source: sql_metric_source
+        sql_expression: sum(mob1_principal_duration)
+      mob2_principal:
+        name: 复借mob2本金
+        category: reloan
+        format: amount
+        aggregation: sum
+        numerator_field: mob2_principal
+        denominator_field: null
+        definition: 新客成交后第2个mob的老客复借放款本金合计（ph_risk_base_reloan_apply）。
+        source: sql_metric_source
+        sql_expression: sum(mob2_principal)
+      mob2_cnt:
+        name: 复借mob2件数
+        category: reloan
+        format: integer
+        aggregation: sum
+        numerator_field: mob2_cnt
+        denominator_field: null
+        definition: 新客成交后第2个mob的老客复借件数。
+        source: sql_metric_source
+        sql_expression: sum(mob2_cnt)
+      mob2_principal_irr:
+        name: '复借mob2本金*IRR'
+        category: reloan
+        format: amount
+        aggregation: sum
+        numerator_field: mob2_principal_irr
+        denominator_field: null
+        definition: '第2个mob复借本金*价格，IRR分子。'
+        source: sql_metric_source
+        sql_expression: sum(mob2_principal_irr)
+      mob2_repay_interest:
+        name: 复借mob2应还利息
+        category: reloan
+        format: amount
+        aggregation: sum
+        numerator_field: mob2_repay_interest
+        denominator_field: null
+        definition: 第2个mob复借应还利息。
+        source: sql_metric_source
+        sql_expression: sum(mob2_repay_interest)
+      mob2_principal_duration:
+        name: '复借mob2本金*久期'
+        category: reloan
+        format: amount
+        aggregation: sum
+        numerator_field: mob2_principal_duration
+        denominator_field: null
+        definition: '第2个mob复借本金*久期。'
+        source: sql_metric_source
+        sql_expression: sum(mob2_principal_duration)
+      mob3_principal:
+        name: 复借mob3本金
+        category: reloan
+        format: amount
+        aggregation: sum
+        numerator_field: mob3_principal
+        denominator_field: null
+        definition: 新客成交后第3个mob的老客复借放款本金合计（ph_risk_base_reloan_apply）。
+        source: sql_metric_source
+        sql_expression: sum(mob3_principal)
+      mob3_cnt:
+        name: 复借mob3件数
+        category: reloan
+        format: integer
+        aggregation: sum
+        numerator_field: mob3_cnt
+        denominator_field: null
+        definition: 新客成交后第3个mob的老客复借件数。
+        source: sql_metric_source
+        sql_expression: sum(mob3_cnt)
+      mob3_principal_irr:
+        name: '复借mob3本金*IRR'
+        category: reloan
+        format: amount
+        aggregation: sum
+        numerator_field: mob3_principal_irr
+        denominator_field: null
+        definition: '第3个mob复借本金*价格，IRR分子。'
+        source: sql_metric_source
+        sql_expression: sum(mob3_principal_irr)
+      mob3_repay_interest:
+        name: 复借mob3应还利息
+        category: reloan
+        format: amount
+        aggregation: sum
+        numerator_field: mob3_repay_interest
+        denominator_field: null
+        definition: 第3个mob复借应还利息。
+        source: sql_metric_source
+        sql_expression: sum(mob3_repay_interest)
+      mob3_principal_duration:
+        name: '复借mob3本金*久期'
+        category: reloan
+        format: amount
+        aggregation: sum
+        numerator_field: mob3_principal_duration
+        denominator_field: null
+        definition: '第3个mob复借本金*久期。'
+        source: sql_metric_source
+        sql_expression: sum(mob3_principal_duration)
+      mob4_principal:
+        name: 复借mob4本金
+        category: reloan
+        format: amount
+        aggregation: sum
+        numerator_field: mob4_principal
+        denominator_field: null
+        definition: 新客成交后第4个mob的老客复借放款本金合计（ph_risk_base_reloan_apply）。
+        source: sql_metric_source
+        sql_expression: sum(mob4_principal)
+      mob4_cnt:
+        name: 复借mob4件数
+        category: reloan
+        format: integer
+        aggregation: sum
+        numerator_field: mob4_cnt
+        denominator_field: null
+        definition: 新客成交后第4个mob的老客复借件数。
+        source: sql_metric_source
+        sql_expression: sum(mob4_cnt)
+      mob4_principal_irr:
+        name: '复借mob4本金*IRR'
+        category: reloan
+        format: amount
+        aggregation: sum
+        numerator_field: mob4_principal_irr
+        denominator_field: null
+        definition: '第4个mob复借本金*价格，IRR分子。'
+        source: sql_metric_source
+        sql_expression: sum(mob4_principal_irr)
+      mob4_repay_interest:
+        name: 复借mob4应还利息
+        category: reloan
+        format: amount
+        aggregation: sum
+        numerator_field: mob4_repay_interest
+        denominator_field: null
+        definition: 第4个mob复借应还利息。
+        source: sql_metric_source
+        sql_expression: sum(mob4_repay_interest)
+      mob4_principal_duration:
+        name: '复借mob4本金*久期'
+        category: reloan
+        format: amount
+        aggregation: sum
+        numerator_field: mob4_principal_duration
+        denominator_field: null
+        definition: '第4个mob复借本金*久期。'
+        source: sql_metric_source
+        sql_expression: sum(mob4_principal_duration)
+      mob5_principal:
+        name: 复借mob5本金
+        category: reloan
+        format: amount
+        aggregation: sum
+        numerator_field: mob5_principal
+        denominator_field: null
+        definition: 新客成交后第5个mob的老客复借放款本金合计（ph_risk_base_reloan_apply）。
+        source: sql_metric_source
+        sql_expression: sum(mob5_principal)
+      mob5_cnt:
+        name: 复借mob5件数
+        category: reloan
+        format: integer
+        aggregation: sum
+        numerator_field: mob5_cnt
+        denominator_field: null
+        definition: 新客成交后第5个mob的老客复借件数。
+        source: sql_metric_source
+        sql_expression: sum(mob5_cnt)
+      mob5_principal_irr:
+        name: '复借mob5本金*IRR'
+        category: reloan
+        format: amount
+        aggregation: sum
+        numerator_field: mob5_principal_irr
+        denominator_field: null
+        definition: '第5个mob复借本金*价格，IRR分子。'
+        source: sql_metric_source
+        sql_expression: sum(mob5_principal_irr)
+      mob5_repay_interest:
+        name: 复借mob5应还利息
+        category: reloan
+        format: amount
+        aggregation: sum
+        numerator_field: mob5_repay_interest
+        denominator_field: null
+        definition: 第5个mob复借应还利息。
+        source: sql_metric_source
+        sql_expression: sum(mob5_repay_interest)
+      mob5_principal_duration:
+        name: '复借mob5本金*久期'
+        category: reloan
+        format: amount
+        aggregation: sum
+        numerator_field: mob5_principal_duration
+        denominator_field: null
+        definition: '第5个mob复借本金*久期。'
+        source: sql_metric_source
+        sql_expression: sum(mob5_principal_duration)
+      mob6_principal:
+        name: 复借mob6本金
+        category: reloan
+        format: amount
+        aggregation: sum
+        numerator_field: mob6_principal
+        denominator_field: null
+        definition: 新客成交后第6个mob的老客复借放款本金合计（ph_risk_base_reloan_apply）。
+        source: sql_metric_source
+        sql_expression: sum(mob6_principal)
+      mob6_cnt:
+        name: 复借mob6件数
+        category: reloan
+        format: integer
+        aggregation: sum
+        numerator_field: mob6_cnt
+        denominator_field: null
+        definition: 新客成交后第6个mob的老客复借件数。
+        source: sql_metric_source
+        sql_expression: sum(mob6_cnt)
+      mob6_principal_irr:
+        name: '复借mob6本金*IRR'
+        category: reloan
+        format: amount
+        aggregation: sum
+        numerator_field: mob6_principal_irr
+        denominator_field: null
+        definition: '第6个mob复借本金*价格，IRR分子。'
+        source: sql_metric_source
+        sql_expression: sum(mob6_principal_irr)
+      mob6_repay_interest:
+        name: 复借mob6应还利息
+        category: reloan
+        format: amount
+        aggregation: sum
+        numerator_field: mob6_repay_interest
+        denominator_field: null
+        definition: 第6个mob复借应还利息。
+        source: sql_metric_source
+        sql_expression: sum(mob6_repay_interest)
+      mob6_principal_duration:
+        name: '复借mob6本金*久期'
+        category: reloan
+        format: amount
+        aggregation: sum
+        numerator_field: mob6_principal_duration
+        denominator_field: null
+        definition: '第6个mob复借本金*久期。'
+        source: sql_metric_source
+        sql_expression: sum(mob6_principal_duration)

@@ -1,0 +1,131 @@
+registry_type: source_table_registry
+version: 1
+updated_at: 2026-08-28
+
+sources:
+  order_trace:
+    name: 菲律宾新客授信全链路宽表
+    table: ph_risk.cx_ph_newcust_cre_order_trace
+    grain: user_id * credit_apply_no * loan_apply_no（一笔授信申请对应首笔动支订单）
+    role: main_analysis_table
+    description: 本次分析的主取数表。由 cx_ph_newcust_cre_base(授信) -> order1(匹订单) -> order2(匹风险/还款计划/产品映射) 逐层拼接，再关联授信/用信决策流出参、评级转换、权益、用户特征与复借mob，包含全部维度字段与订单级风险、还款、定价明细字段。
+  indicator:
+    name: 新客授信指标聚合表
+    table: ph_risk.cx_ph_newcust_cre_indicator
+    grain: user_id * credit_apply_no * loan_apply_no（与order_trace同粒度，直接对明细做指标列聚合，指标名不变）
+    role: pivot_base_table
+    description: pivot参考的底表：对 order_trace 按 trace_date>='2025-05-01' 聚合出授信件数、动支、成交、久期、定价、全部风险表现点(overdue_amt/overdue_cnt/expire_amt/expire_cnt)与成交画像(deal_*_sum/cnt)等指标列。
+  credit_apply:
+    name: 授信申请表
+    table: ph_dwd.dwd_preloan_credit_apply_df
+    grain: user_id * credit_apply_no
+    role: upstream
+    description: 授信申请明细：created_time(->trace_date/trace_mth)、status(20=通过->is_approve)、rn_credit_asc(->is_first_apply)。
+  quota_trade:
+    name: 额度切片表
+    table: ph_ods.ods_mysql_prod_loan_quota_account_trade_df
+    grain: biz_flow_no
+    role: upstream
+    description: 授信额度来源：biz_scene in (10,80) 取 credit_amount_after(->total_credits)；biz_scene=20 取动支前后可用额度。
+  user:
+    name: 用户注册表
+    table: ph_ods.ods_mysql_prod_user_user_df
+    grain: user_id
+    role: upstream
+    description: 注册时间与手机号；手机号前缀映射运营商(carrier)。
+  user_ext:
+    name: 用户衍生信息表
+    table: ph_ods.ods_mysql_prod_user_user_ext_df
+    grain: user_id
+    role: upstream
+    description: 投放渠道(channel)：Organic或无记录=自然量，否则=投放-{channel}。
+  common_user:
+    name: 注册平台表
+    table: ph_risk.risk_common_user
+    grain: user_id
+    role: upstream
+    description: register_device_type（注册系统：Android/ios），pivot维度。
+  common_loan:
+    name: 公共借款表
+    table: ph_risk.risk_common_loan
+    grain: user_id
+    role: upstream
+    description: loan_freq/pay_success_time，用于 hist_if_loan_suc（授信前是否已成功借款）。
+  camp_strategy:
+    name: 投放campaign表
+    table: ph_ads.bi_camp_strategy_name
+    grain: campaign_name
+    role: upstream
+    description: campaign_name -> callback_strategy，用于 campaign_group。
+  order_apply:
+    name: 借款订单申请表
+    table: ph_dwd.dwd_inloan_order_apply_df
+    grain: loan_apply_no
+    role: upstream
+    description: 动支订单明细：订单时间/状态(->t0/t1/t3/t7_order、is_order、is_order_approve、is_payout、payout_principal/credits)；每笔授信只取首笔订单。
+  dpd_vintage:
+    name: vintage风险表现表
+    table: ph_dws.dws_risk_dpd_vintage_df
+    grain: loan_no * 期数 * 观察点
+    role: upstream
+    description: 全部风险表现点的唯一来源（tag='new'新客）：overdue_amt_{期}_{观察天} 为源字段；观察点已记录(非null)即视为到期，expire_amt=该单repay_principal、expire_cnt=1，overdue_amt>0则overdue_cnt=1。
+  repay_plan:
+    name: 还款计划表
+    table: ph_dwd.dwd_repay_loan_repay_plan_df
+    grain: loan_no * period_no
+    role: upstream
+    description: repay_principal/repay_interest/account_date/due_date：到期本金、久期(deal_amt_dt=Σ(due_date-account_date)*repay_principal)与APR分母。
+  product_map:
+    name: 产品期限价格久期映射表
+    table: ph_risk.ph_product_term_price_duration_mapping
+    grain: product_term_code
+    role: upstream
+    description: price(IRR)、period(期数)、days_per_period、n_duration(名义久期)、a_duration(实际久期)。
+  decision_detail:
+    name: 决策结果明细表
+    table: ph_dwd.dwd_inloan_t_decision_result_detail_df
+    grain: user_id * biz_flow_number
+    role: upstream
+    description: 授信主决策/新客请款子决策的 input/output/context：评级(cre/ord_creditlevel、rating、rating_sub)、productTermPackage、engineversion(->评级/额度测试版本)。
+  rating_conv_cre:
+    name: 授信评级转换表
+    table: ph_risk.boyu_cre_rating_conversion_newcust
+    grain: user_id * biz_flow_number
+    role: upstream
+    description: creditlevel_adjust/rating_adjust/rating_sub_adjust：原始评级 -> 调整后评级(0918新增)。
+  rating_conv_ord:
+    name: 用信评级转换表
+    table: ph_risk.boyu_ord_rating_conversion_newcust
+    grain: user_id * biz_flow_number
+    role: upstream
+    description: 用信阶段评级转换，同上。
+  vip_order:
+    name: 会员权益订单表
+    table: ph_dwd.dwd_vipcore_vip_order_df
+    grain: loan_order_id
+    role: upstream
+    description: vip_order/vip_order_success；vip_group/vip_default_select 由 ph_ods.randomv3 随机分组生成。
+  feature:
+    name: 新客授信阶段属性特征表
+    table: ph_risk.cx_ph_credit_new_cust_feature
+    grain: credit_apply_no
+    role: upstream
+    description: 用户画像分箱与raw值（年龄/学历/收入/多头/cibi等），来自 ads_features_*、dwd_mongo_rcs_gateway_cibi_* 等特征源表。
+  reloan_apply:
+    name: 复借申请底表
+    table: ph_risk.ph_risk_base_reloan_apply
+    grain: user_id * loan_apply_no
+    role: upstream
+    description: 老客复借成交（is_suc=1 且 user_tag='老客'），用于复借 mob0-mob6 指标。
+  mob_base:
+    name: 复借mobbase
+    table: ph_risk.whx_ph_mob_base
+    grain: user_id
+    role: upstream
+    description: 复借 mob 基础表。
+  sd_targets:
+    name: SD目标表
+    table: ph_risk.jojo_sd_targets
+    grain: credit_apply_no
+    role: upstream
+    description: target_user_cycle2/4_ever3/7 -> overdue/expire_cycle2/4_ever3/7（复借风险）。

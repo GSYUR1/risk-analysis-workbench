@@ -1,0 +1,6 @@
+interface:
+  display_name: "风控策略分析工作分身"
+  short_description: "统一取数、远程分析与 Excel 交付，保留执行证据并审核沉淀跨任务经验"
+  default_prompt: "使用 $risk-analysis-agent，根据我的背景和目标建立风控分析任务，先确认方案，再逐项执行并生成可追溯报告和复盘。"
+policy:
+  allow_implicit_invocation: true

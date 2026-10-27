@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "external_enabled": false,
+  "ssh_hosts": {},
+  "approved_profiles": [],
+  "business_defaults": {
+    "registry_path": "工作约定/数据口径/ph",
+    "country": null,
+    "product": null
+  },
+  "knowledge_limit": 5,
+  "backup_status": "未配置",
+  "maintenance_reviewed_count": 0
+}
