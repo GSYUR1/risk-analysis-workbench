@@ -9,9 +9,12 @@
 | ph_data_analysis.py | 原有指标、分箱、透视计算；保留算法和常量，须审核共享权限 |
 | excel_export.py | 标准指标/透视结果的格式化导出，不承担取数 |
 | pivot_base_sql.py | 基于profile生成SQL及检查SQL，不连接数据库 |
+| analysis_base.py | 保存共用Parquet底表、SQL和数据口径清单，离线补充交叉；操作见analysis_base使用说明.md |
 | tests/ | 合成数据与临时目录离线验证 |
 
 计算仍优先使用现成函数，标准表格仍调用 `merge_formatted_pivot_to_excel` / `merge_formatted_indicator_to_excel`。ph数据口径目录完整保留；函数缺口再读取对应定义，不自行编造指标。
+
+明细使用generate_pivot，可加总聚合组件使用generate_grouped_pivot；同底数先保存共用数据包再出报告，后续补表先复用底表。保存顺序、边界和验收以《工具调用与分析输出》为准。
 
 运行 `python -X utf8 -m unittest discover -s 工具/tests -v`。
 

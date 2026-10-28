@@ -1,0 +1,24 @@
+{
+  "base_id": "填写当前事项内唯一底表版本",
+  "kind": "grouped",
+  "sample": "填写已确认客群和筛选条件",
+  "time_window": "填写观察窗和表现窗",
+  "snapshot": "填写源分区及实际取数时间",
+  "grain": "示例为月份x评级x渠道，请按实际修改",
+  "grain_keys": ["month", "rating", "channel"],
+  "dimensions": ["month", "rating", "channel"],
+  "required_columns": ["month", "rating", "channel", "cre_cnt", "overdue_amt_1_7", "expire_amt_1_7"],
+  "definition_evidence": "填写来源表、指标定义版本及哈希、成熟口径、币种和分箱证据，不照抄占位符",
+  "storage_authorization": "填写真实存储授权及原执行环境，不代表明细下载获批",
+  "retention": "填写实际保留要求，不自动修改既有期限",
+  "additive_columns": ["cre_cnt", "overdue_amt_1_7", "expire_amt_1_7"],
+  "additivity_evidence": {
+    "cre_cnt": "填写申请不跨维度组重复的依据，不能替代去重人数",
+    "overdue_amt_1_7": "填写同口径互斥分组的金额可加依据",
+    "expire_amt_1_7": "填写同口径互斥分组的成熟金额可加依据"
+  },
+  "metrics": {
+    "计数": {"op": "sum", "column": "cre_cnt", "evidence": "填写原报告申请件数定义来源"},
+    "dpd1_7": {"op": "ratio", "numerator": "overdue_amt_1_7", "denominator": "expire_amt_1_7", "evidence": "填写原报告金额风险定义来源"}
+  }
+}

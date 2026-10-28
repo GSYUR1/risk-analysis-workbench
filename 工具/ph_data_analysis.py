@@ -1562,6 +1562,57 @@ def generate_pivot(df, id_col, ind, col, margins=True, stage='credit', risk_ind=
     return _assemble_pivot_result(available_indicators, indicator, all_risk_indicator_names, show)
 
 
+def generate_grouped_pivot(df, ind, col, metrics):
+    """Reaggregate declared additive components; compute ratios after sums, including All."""
+    row_keys = _as_name_list(ind)
+    column_keys = _as_name_list(col)
+    keys = row_keys + column_keys
+    if not row_keys or not column_keys or len(set(keys)) != len(keys) or not metrics:
+        raise ValueError('Provide disjoint row/column dimensions and explicit metrics')
+    components = []
+    for definition in metrics.values():
+        if definition.get('op') == 'sum':
+            components.append(definition['column'])
+        elif definition.get('op') == 'ratio':
+            components.extend([definition['numerator'], definition['denominator']])
+        else:
+            raise ValueError('Only additive sums and ratios are supported; no mean-of-rates or distinct summation')
+    components = list(dict.fromkeys(components))
+    if set(components) & set(keys):
+        raise ValueError('Components cannot also be dimensions')
+    missing = set(keys + components) - set(df.columns)
+    if missing:
+        raise ValueError(f'Missing grouped columns: {sorted(missing)}')
+    work = df[keys + components].copy()
+    if work.empty or any(not pd.api.types.is_numeric_dtype(work[name]) for name in components):
+        raise ValueError('Nonempty numeric additive components required')
+    for key in keys:
+        if work[key].isin(['All']).any():
+            raise ValueError('All is reserved for calculated margins, not an input grouping level')
+        work[key] = work[key].astype(object).where(work[key].notna(), '__MISSING__')
+    cells = work.groupby(keys, observed=True, dropna=False, sort=False)[components].sum(min_count=1)
+    row_totals = work.groupby(row_keys, observed=True, dropna=False, sort=False)[components].sum(min_count=1)
+    column_totals = work.groupby(column_keys, observed=True, dropna=False, sort=False)[components].sum(min_count=1)
+    all_row = 'All' if len(row_keys) == 1 else tuple(['All'] + [''] * (len(row_keys) - 1))
+    all_column = 'All' if len(column_keys) == 1 else tuple(['All'] + [''] * (len(column_keys) - 1))
+    tables = {}
+    for component in components:
+        table = cells[component].unstack(column_keys, fill_value=0)
+        table[all_column] = row_totals[component].reindex(table.index)
+        totals = column_totals[component].reindex(table.columns).copy()
+        totals.loc[all_column] = work[component].sum(min_count=1)
+        margin_index = pd.Index([all_row], name=table.index.name) if len(row_keys) == 1 else pd.MultiIndex.from_tuples([all_row], names=row_keys)
+        margin = pd.DataFrame([totals.to_numpy()], index=margin_index, columns=table.columns)
+        tables[component] = pd.concat([table, margin])
+    output = {}
+    for name, definition in metrics.items():
+        if definition['op'] == 'sum':
+            output[name] = tables[definition['column']]
+        else:
+            output[name] = tables[definition['numerator']] / tables[definition['denominator']].replace(0, np.nan)
+    return pd.concat(output, axis=1)
+
+
 def generate_old_pivot(df, id_col, ind, col, margins=True, stage='payout', risk_ind=None,
                        indicator=None, lift_base='overall', show=True):
     """
