@@ -17,7 +17,7 @@ warnings.filterwarnings("ignore")
 pd.options.display.max_rows = 1000
 pd.options.display.max_columns = 500
 # 导出带格式的透视表到 Excel
-def merge_formatted_pivot_to_excel(dict_df, output_path, risk_ind=None, sheet_name='all'):
+def merge_formatted_pivot_to_excel(dict_df, output_path, risk_ind=None, sheet_name='all', workbook=None, start_row=1, start_col=1):
     """
     将多个pivot_table写入同一个sheet，支持表头合并、数字格式化和条件格式
     
@@ -26,10 +26,12 @@ def merge_formatted_pivot_to_excel(dict_df, output_path, risk_ind=None, sheet_na
     output_path: 输出路径
     risk_ind: 风险指标名称，如'3_30'，用于识别风险相关字段
     sheet_name: 唯一sheet名称，所有表纵向排列在该sheet中
+    workbook: 可选的已有内存工作簿；新增Sheet，保留其他标准表格
+    start_row/start_col: 标准表格起始位置，供外围叙述留白
     """ 
     
-    wb = Workbook() 
-    ws = wb.active
+    wb = workbook if workbook is not None else Workbook()
+    ws = wb.create_sheet(sheet_name) if workbook is not None else wb.active
     ws.title = sheet_name
     
     # 样式定义
@@ -115,9 +117,6 @@ def merge_formatted_pivot_to_excel(dict_df, output_path, risk_ind=None, sheet_na
             f"{get_column_letter(s)}{row_start}:{get_column_letter(e)}{row_end}" 
             for s, e in range_parts
         ]) 
-    
-    start_row = 1
-    start_col = 1
     
     for key, df in dict_df.items():
         # 写入标题行
@@ -338,6 +337,8 @@ def _indicator_excel_value(val):
 def _indicator_number_format(name):
     """与 ph_data_analysis._metric_number_format 对齐的 Excel 数字格式。"""
     name = str(name)
+    if '弹性' in name or '系数' in name or '倍数' in name or '百分点' in name or name in ('预估成交件数', '预估动支件数'):
+        return '#,##0.00'
     if _RE_INDICATOR_DPD_LIFT.match(name):
         return '0.00'
     if name in ('IRR', 'APR') or re.search(r'率|占比', name) or _RE_INDICATOR_DPD_RATE.match(name):
@@ -361,7 +362,7 @@ def _indicator_bar_color(name):
     return _INDICATOR_BAR_COLOR_COUNT
 
 
-def merge_formatted_indicator_to_excel(dict_df, output_path, sheet_name='all'):
+def merge_formatted_indicator_to_excel(dict_df, output_path, sheet_name='all', workbook=None, start_row=1, start_col=1):
     """
     将多个 generate_indicator 结果表写入同一个 sheet，带数字格式和按列类型的数据条。
 
@@ -374,18 +375,17 @@ def merge_formatted_indicator_to_excel(dict_df, output_path, sheet_name='all'):
     dict_df: 字典 {标题: DataFrame}，value 为 generate_indicator 返回的表（单层列，索引可为单层或多层）
     output_path: Excel 保存路径
     sheet_name: 工作表名称，所有表纵向排列
+    workbook: 可选的已有内存工作簿；新增Sheet，不重绘其他标准表格
+    start_row/start_col: 标准表格起始位置
     """
-    wb = Workbook()
-    ws = wb.active
+    wb = workbook if workbook is not None else Workbook()
+    ws = wb.create_sheet(sheet_name) if workbook is not None else wb.active
     ws.title = sheet_name
 
     header_align = Alignment(horizontal='center', vertical='center')
     bold_font = Font(bold=True)
     header_fill = PatternFill(start_color='DCE6F1', end_color='DCE6F1', fill_type='solid')
     bottom_border = Border(bottom=Side(style='thin'))
-
-    start_row = 1
-    start_col = 1
 
     for key, df in dict_df.items():
         if df is None or len(df.columns) == 0:

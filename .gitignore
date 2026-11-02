@@ -12,6 +12,7 @@ __pycache__/
 *.xlsx
 *.xls
 *.csv
+!/分析功能/策略影响预估/示例/synthetic.csv
 *.parquet
 *.ipynb
 /工作约定/config.json

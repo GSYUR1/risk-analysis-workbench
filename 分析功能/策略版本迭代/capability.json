@@ -1,0 +1,6 @@
+{
+  "schema_version": 1, "id": "strategy_iteration", "name": "策略版本迭代", "status": "workflow", "version": "0.1.0",
+  "entry": "分析功能/策略版本迭代/README.md", "documents": [], "rules": [], "templates": [], "code": [], "tests": [],
+  "requires": ["feature_analysis", "strategy_impact"], "execution": "guidance_only", "validation": "not_an_executor",
+  "limitations": ["按需组合能力，不自动执行全流程", "特征挖掘内置尚未完成"]
+}

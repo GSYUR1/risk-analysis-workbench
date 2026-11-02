@@ -1,0 +1,7 @@
+{
+  "schema_version": 1, "rule_id": "quota_elasticity", "version": "1.0.0", "status": "approved_assumption",
+  "source": "2026-10-28 用户提出风险弹性0.5、可选动支弹性0.2、额度与成交件均1:1，并确认按方案实现",
+  "scope": "额度变化的静态线性情景；不是跨国家实证规律",
+  "defaults": {"risk_elasticity": 0.5, "draw_enabled": false, "draw_elasticity": 0.2},
+  "draw_upper_bound": 1.0, "risk_out_of_range": "error", "supersedes": null
+}

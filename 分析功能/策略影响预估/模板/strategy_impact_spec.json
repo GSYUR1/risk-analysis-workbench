@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "context": {"country": "ph", "product": "待填写产品", "currency": "PHP", "sample_window": "待填写样本窗", "draw_window": "待填写动支窗"},
+  "dimensions": ["评级", "月份"],
+  "column_dimension": "评级",
+  "summary_groups": [["评级"], ["月份"]],
+  "scenario": "apply",
+  "fields": {"approved_count": "授信通过件数", "avg_quota": "平均额度", "draw_count": "动支件数", "payout_count": "成交件数", "payout_amount": "成交金额", "coefficient": "额度系数"},
+  "parameters": {},
+  "assumptions": {"approved_population_unchanged": true, "post_draw_conversion_unchanged": true, "within_group_composition_unchanged": true, "maturity_structure_unchanged": true},
+  "risk_metrics": [{"id": "dpd3_7", "kind": "amount", "rate": "dpd3_7", "denominator": "expire_amt_3_7", "weight_mode": "mature", "definition": "待填写已确认风险口径key与成熟定义"}],
+  "definition_files": ["工作约定/数据口径/ph/metric_registry.yaml"],
+  "source": {"sheet": "底表", "range": "A1:J5"}
+}

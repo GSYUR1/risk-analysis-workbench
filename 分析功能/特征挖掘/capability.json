@@ -1,0 +1,7 @@
+{
+  "schema_version": 1, "id": "feature_mining", "name": "特征挖掘", "status": "planned", "version": "0.1.0",
+  "entry": "分析功能/特征挖掘/README.md",
+  "documents": [], "rules": [], "templates": [], "code": [], "tests": [], "requires": [],
+  "execution": "not_implemented", "validation": "not_implemented",
+  "limitations": ["后期内置；本轮不引用外部特征挖掘Skill"]
+}

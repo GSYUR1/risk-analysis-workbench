@@ -1,0 +1,7 @@
+{
+  "schema_version": 1, "id": "feature_analysis", "name": "特征分析", "status": "partial", "version": "0.1.0",
+  "entry": "分析功能/特征分析/README.md", "documents": ["分析功能/特征分析/筛选规则整理.md"],
+  "rules": [], "templates": [], "code": ["工具/ph_data_analysis.py", "工具/analysis_base.py", "工具/excel_export.py"],
+  "tests": ["工具/tests/test_analysis_base.py"], "requires": [], "execution": "local_only", "validation": "existing_tools_only",
+  "limitations": ["评级与月份lift自动筛选规则尚待来源核对和确认"]
+}

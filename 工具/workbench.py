@@ -14,6 +14,8 @@ def main():
     sub = parser.add_subparsers(dest='command', required=True)
     for name in ('init', 'index', 'maintenance'):
         sub.add_parser(name)
+    command = sub.add_parser('capabilities')
+    command.add_argument('--refresh', action='store_true')
     command = sub.add_parser('init-project')
     command.add_argument('--project-root', default='.')
     command = sub.add_parser('new-analysis')
@@ -44,7 +46,10 @@ def main():
     args = parser.parse_args()
     workbench = Workbench(args.root)
     try:
-        if args.command == 'init':
+        if args.command == 'capabilities':
+            from capability_catalog import build_catalog
+            result = build_catalog(args.root, write=args.refresh)
+        elif args.command == 'init':
             result = workbench.initialize()
         elif args.command == 'index':
             result = workbench.index()

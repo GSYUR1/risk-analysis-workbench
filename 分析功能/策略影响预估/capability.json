@@ -1,0 +1,11 @@
+{
+  "schema_version": 1, "id": "strategy_impact", "name": "策略影响预估", "status": "available", "version": "1.0.0",
+  "entry": "分析功能/策略影响预估/README.md",
+  "documents": ["分析功能/策略影响预估/方法说明.md"],
+  "rules": ["分析功能/策略影响预估/规则/quota_elasticity.v1.json"],
+  "templates": ["分析功能/策略影响预估/模板/strategy_impact_spec.json"],
+  "code": ["工具/strategy_impact.py", "工具/strategy_impact_excel.py", "工具/excel_export.py"],
+  "tests": ["工具/tests/test_strategy_impact.py", "工具/tests/test_strategy_impact_export.py"],
+  "requires": [], "execution": "local_only", "validation": "synthetic_offline_only",
+  "limitations": ["只实现额度调整静态情景", "没有校准弹性或验证真实策略收益", "不操作原生透视缓存，不连接远程服务"]
+}
